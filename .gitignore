@@ -1,0 +1,8 @@
+node_modules/
+.next/
+.env*
+!.env.example
+private-import/
+*.tsbuildinfo
+.npm-cache/
+__pycache__/

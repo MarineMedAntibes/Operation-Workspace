@@ -1,0 +1,73 @@
+import assert from "node:assert/strict";
+import { readFile, readdir } from "node:fs/promises";
+import test from "node:test";
+import { PGlite } from "@electric-sql/pglite";
+import { applyDemoCommand } from "../src/lib/commands";
+import { demoWorkspace } from "../src/lib/demo";
+
+test("per-check substitutes preserve master requirements, audit reasons and approved prices", async () => {
+  const db = new PGlite();
+  try {
+    await db.exec(`create role anon; create role authenticated; create schema auth;
+      create table auth.users(id uuid primary key);
+      create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;
+      grant usage on schema auth to authenticated; grant execute on function auth.uid() to authenticated;`);
+    const dir = new URL("../supabase/migrations/", import.meta.url);
+    for (const name of (await readdir(dir)).filter(n => n.endsWith(".sql")).sort()) await db.exec(await readFile(new URL(name, dir), "utf8"));
+    const staff = "00000000-0000-0000-0000-000000000001";
+    await db.exec(`insert into auth.users values ('${staff}'); insert into public.staff_members values ('${staff}','Tester');`);
+    const template = (await db.query<{id:string}>("insert into public.kit_templates(name,framework,category,version,published) values ('Test','MSN','CAT B','v1',true) returning id")).rows[0].id;
+    await db.query("insert into public.template_items(template_id,source_code,description,baseline_packs,scaling,unit_price,attributes) values ($1,'LINE|Bag','Original product',2,'fixed',10,'{\"ned\":true}')", [template]);
+    await db.exec("insert into public.import_sources(id,vessel_name,source_path,source_hash,status) values ('00000000-0000-0000-0000-000000000002','Fixture','archive/source.xlsx','fixture-hash','needs_review');");
+    await db.exec("set role authenticated;");
+    assert.equal((await db.query("select * from public.import_sources")).rows.length,0);
+    const command = async (action:string,payload:object) => (await db.query<{id:string}>("select public.workspace_command($1,$2::jsonb) as id",[action,JSON.stringify(payload)])).rows[0].id;
+    await assert.rejects(() => command("edit_check_item",{}), /Staff access required/);
+    await db.exec(`set request.jwt.claim.sub='${staff}';`);
+    assert.equal((await db.query("select * from public.import_sources")).rows.length,1);
+    await assert.rejects(() => db.query("update public.import_sources set status='imported'"), /permission denied/);
+    await assert.rejects(() => db.query("select public.workspace_command_v2('create_client','{}')"), /permission denied/);
+    const client = await command("create_client",{name:"Fixture"});
+    const vessel = await command("create_vessel",{name:"Fixture",client_id:client,framework:"MSN",crew:10});
+    const check = await command("create_check",{vessel_id:vessel,template_id:template,check_date:"2026-11-20",job_type:"Routine Refill"});
+    const item = (await db.query<{id:string}>("select id from public.check_items where check_id=$1",[check])).rows[0].id;
+    const edit = {item_id:item,substitute_description:"Alternative requested",pack_description:"Pack of 5",required_packs:3,unit_price:12,reason:"Client request / supplier unavailable"};
+    await assert.rejects(() => command("edit_check_item",{...edit,reason:""}),/reason/);
+    await command("edit_check_item",edit);
+    const line = (await db.query<{description:string;attributes:Record<string,unknown>}>("select * from public.check_items where id=$1",[item])).rows[0];
+    assert.equal(line.description,"Alternative requested"); assert.equal(line.attributes.original_description,"Original product");
+    assert.equal((await db.query<{description:string}>("select description from public.template_items where template_id=$1",[template])).rows[0].description,"Original product");
+    await command("mark_assessed",{item_id:item,state:"reviewed"});
+    await db.exec("reset role;");
+    await db.query("update public.kit_checks set attributes='{\"imported\":true,\"review_required\":true}' where id=$1",[check]);
+    await db.query("update public.check_items set attributes=attributes || '{\"requirement_unknown\":true}' where id=$1",[item]);
+    await db.exec("set role authenticated;");
+    await assert.rejects(() => command("create_quote",{check_id:check,assessment_fee:0}),/import review/);
+    await command("acknowledge_import_review",{check_id:check,reason:"Workbook comparison recorded"});
+    await assert.rejects(() => command("create_quote",{check_id:check,assessment_fee:0}),/unknown imported quantities/);
+    await command("edit_check_item",edit);
+    await command("create_quote",{check_id:check,assessment_fee:0});
+    const quote = (await db.query<{lines:{description:string}[];subtotal:number}>("select * from public.quotes where check_id=$1",[check])).rows[0];
+    assert.equal(Number(quote.subtotal),36); assert.equal(quote.lines[0].description,"Alternative requested");
+    await assert.rejects(() => command("edit_check_item",edit),/locked/);
+    await command("approve_quote",{check_id:check});
+    await assert.rejects(() => command("edit_check_item",{...edit,unit_price:13}),/price are locked/);
+    await assert.rejects(() => command("edit_check_item",{...edit,pack_description:"Different pack"}),/price are locked/);
+    await command("edit_check_item",{...edit,substitute_description:"Same-price alternative",reason:"Sourcing note"});
+    assert.equal((await db.query<{lines:{description:string}[]}>("select lines from public.quotes where check_id=$1",[check])).rows[0].lines[0].description,"Alternative requested");
+    await command("add_batch",{item_id:item,quantity:3,no_expiry:true}); await command("finish",{check_id:check});
+    await assert.rejects(() => command("edit_check_item",edit),/locked/);
+    assert.equal((await db.query("select * from public.audit_events where action='edit_check_item' and details ? 'before'")).rows.length,3);
+  } finally { await db.close(); }
+});
+
+test("demo substitutes change only check lines and require a reason", () => {
+  let data = applyDemoCommand(demoWorkspace({includeExamples:false}),{action:"create_check",payload:{vessel_id:"vessel-demo",template_id:"template-demo",check_date:"2026-11-20",job_type:"Routine Refill"}});
+  const line = data.check_items[0];
+  const payload={item_id:line.id,substitute_description:"Different dressing",pack_description:line.pack_description,required_packs:line.required_packs,unit_price:line.unit_price,reason:"Client request"};
+  assert.throws(() => applyDemoCommand(data,{action:"edit_check_item",payload:{...payload,reason:""}}));
+  data=applyDemoCommand(data,{action:"edit_check_item",payload});
+  assert.equal(data.check_items[0].description,"Different dressing");
+  assert.equal(data.template_items[0].description,"Sterile dressings");
+  assert.equal(data.check_items[0].attributes?.original_description,"Sterile dressings");
+});

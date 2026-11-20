@@ -1,0 +1,75 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+import { PGlite } from "@electric-sql/pglite";
+import { applyDemoCommand } from "../src/lib/commands";
+import type { Workspace } from "../src/lib/types";
+
+test("versioned template RPC protects history, price review, staff access and retained kill lines", async () => {
+ const db = new PGlite();
+ try {
+  await db.exec(`create role anon; create role authenticated; create schema auth;
+   create table auth.users(id uuid primary key);
+   create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;
+   grant usage on schema auth to authenticated; grant execute on function auth.uid() to authenticated;`);
+  for (const file of ["202610270001_workspace.sql", "202611200001_templates.sql"]) await db.exec(await readFile(new URL(`../supabase/migrations/${file}`, import.meta.url), "utf8"));
+  const staff="00000000-0000-0000-0000-000000000001";
+  await db.exec(`insert into auth.users values ('${staff}'); insert into public.staff_members values ('${staff}','Tester'); set role authenticated;`);
+  const command=async(action:string,payload:object)=>(await db.query<{id:string}>("select public.workspace_command($1,$2::jsonb) as id",[action,JSON.stringify(payload)])).rows[0].id;
+  await assert.rejects(()=>command("create_template",{name:"No access"}),/Staff access required/);
+  await db.exec(`set request.jwt.claim.sub='${staff}';`);
+  const template=await command("create_template",{name:"Kit",framework:"Malta",category:"CAT B",version:"v1"});
+  await assert.rejects(()=>command("publish_template",{template_id:template}),/no items/);
+  const base={template_id:template,source_code:"M1|Bag A",description:"Equipment",location:"Bag A",baseline_packs:3,scaling:"fixed",unit_price:4,attributes:{ned:true,price_missing:true}};
+  await command("save_template_item",base);
+  const item=(await db.query<{id:string}>("select id from public.template_items where template_id=$1",[template])).rows[0].id;
+  await assert.rejects(()=>command("publish_template",{template_id:template}),/missing sell prices/);
+  await command("save_template_item",{...base,item_id:item,attributes:{ned:true,price_missing:false}});
+  await assert.rejects(()=>command("save_template_item",{...base,source_code:"Other",scaling:"guess"}),/Invalid scaling/);
+  await command("publish_template",{template_id:template});
+  await assert.rejects(()=>command("save_template_item",{...base,item_id:item}),/immutable/);
+  await assert.rejects(()=>db.query("select public.workspace_command_v1('create_client','{}'::jsonb)"),/permission denied/);
+  await assert.rejects(()=>db.query("update public.template_items set unit_price=1"),/permission denied/);
+  const client=await command("create_client",{name:"Test"});
+  const vessel=await command("create_vessel",{name:"Test vessel",client_id:client,framework:"Malta",crew:50});
+  const check=await command("create_check",{vessel_id:vessel,template_id:template,check_date:"2026-11-20",job_type:"Routine Refill"});
+  const snapshot=(await db.query<{id:string;attributes:{ned:boolean};required_packs:number}>("select * from public.check_items where check_id=$1",[check])).rows[0];
+  assert.equal(snapshot.attributes.ned,true); assert.equal(Number(snapshot.required_packs),3);
+  await command("add_batch",{item_id:snapshot.id,quantity:1,no_expiry:true});
+  await command("mark_assessed",{item_id:snapshot.id,state:"reviewed"});
+  await command("set_kill_line",{item_id:snapshot.id,kill_line:true});
+  const q=(await db.query<{kept:number;needed:number}>("select * from public.line_quantities where id=$1",[snapshot.id])).rows[0];
+  assert.equal(Number(q.kept),1); assert.equal(Number(q.needed),0);
+  await command("create_quote",{check_id:check,assessment_fee:10});
+  await assert.rejects(()=>command("set_kill_line",{item_id:snapshot.id,kill_line:false}),/locked/);
+  await command("approve_quote",{check_id:check}); await command("finish",{check_id:check});
+  const next=await command("create_template",{name:"Kit updated",framework:"Malta",category:"CAT B",version:"v2",source_template_id:template});
+  await assert.rejects(()=>command("create_template",{name:"Wrong family",framework:"MSN",category:"CAT B",version:"v3",source_template_id:template}),/source framework/);
+  const nextItem=(await db.query<{id:string}>("select id from public.template_items where template_id=$1",[next])).rows[0].id;
+  await command("save_template_item",{...base,template_id:next,item_id:nextItem,baseline_packs:9,unit_price:99,attributes:{ned:false}});
+  await command("save_template_item",{...base,template_id:next,source_code:"M1|Bag B",attributes:{ned:true}});
+  const extra=(await db.query<{id:string}>("select id from public.template_items where template_id=$1 and source_code='M1|Bag B'",[next])).rows[0].id;
+  await command("delete_template_item",{template_id:next,item_id:extra});
+  await command("publish_template",{template_id:next});
+  assert.equal((await db.query<{published:boolean}>("select published from public.kit_templates where id=$1",[template])).rows[0].published,false);
+  assert.equal(Number((await db.query<{unit_price:number}>("select unit_price from public.check_items where id=$1",[snapshot.id])).rows[0].unit_price),4);
+  await command("retire_template",{template_id:next});
+  await assert.rejects(()=>command("delete_template_item",{template_id:next,item_id:nextItem}),/immutable/);
+  assert.ok((await db.query("select * from public.audit_events where action='save_template_item' and details ? 'attributes'")).rows.length>0);
+ } finally { await db.close(); }
+});
+
+test("demo template versions preserve line metadata and immutable history",()=>{
+ let data:Workspace={clients:[],vessels:[],vendors:[],vendor_products:[],kit_templates:[],template_items:[],kit_checks:[],check_items:[],batches:[],quotes:[]};
+ const run=(action:string,payload:object)=>{data=applyDemoCommand(data,{action,payload});};
+ run("create_template",{name:"Kit",framework:"MSN",category:"CAT A",version:"v1"});
+ const template=data.kit_templates[0].id;
+ run("save_template_item",{template_id:template,source_code:"A|Bag",description:"Dressing",baseline_packs:2,scaling:"band",unit_price:3,attributes:{ned:false,price_missing:true}});
+ assert.throws(()=>run("publish_template",{template_id:template}),/missing sell prices/);
+ run("save_template_item",{...data.template_items[0],item_id:data.template_items[0].id,attributes:{ned:true}});
+ run("publish_template",{template_id:template});run("retire_template",{template_id:template});
+ assert.throws(()=>run("delete_template_item",{template_id:template,item_id:data.template_items[0].id}),/immutable/);
+ run("create_template",{name:"Kit",framework:"MSN",category:"CAT A",version:"v2",source_template_id:template});
+ assert.equal(data.template_items[1].attributes.ned,true);
+ assert.notEqual(data.template_items[0].id,data.template_items[1].id);
+});
