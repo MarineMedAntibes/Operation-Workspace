@@ -22,6 +22,13 @@ export default function TemplatesPage({ data, busy, command }: Props) {
   const template = data.kit_templates.find((t) => t.id === selected);
   const locked = !!template && (template.published || template.ever_published || data.kit_checks.some((c) => c.template_id === template.id));
   const lines = inWorkbookOrder(data.template_items.filter((i) => i.template_id === selected));
+  const health = [
+    ...(!lines.length ? ["This template has no lines."] : []),
+    ...(lines.some(i=>i.attributes.price_missing) ? ["Review missing sell prices before publication."] : []),
+    ...(lines.some(i=>!Number.isInteger(Number(i.baseline_packs))) ? ["Some baseline quantities are fractional packs; review pack sizes and whole-pack entry."] : []),
+    ...(lines.some(i=>!i.attributes.item_id) ? ["Some lines have no separate original Item ID; check their source references before Excel export."] : []),
+    ...(template?.framework==="ALL"&&lines.some(i=>!i.attributes.statutory_section) ? ["Review mandatory-versus-extra classification for every combined-regulation line."] : []),
+  ];
   async function create(form: FormData) {
     const payload = Object.fromEntries(form.entries());
     if (!payload.source_template_id) delete payload.source_template_id;
@@ -55,6 +62,7 @@ export default function TemplatesPage({ data, busy, command }: Props) {
         <button className="primary" disabled={busy}>Create draft</button><button type="button" className="secondary" onClick={() => setCreating(false)}>Cancel</button>
       </form>}
       {template && <>
+        <details className="template-provenance"><summary>Template health check — {health.length ? `${health.length} points to review` : "basic data checks clear"}</summary>{health.map(message=><p key={message}>{message}</p>)}<p>Source row order and unique line keys are preserved. Regulatory amendment currency and the suitability of substitutions still require your review.</p></details>
         <div className="template-provenance"><p>{lines.filter((i) => i.attributes.price_missing).length} prices need review before publication.</p>{lines[0]?.attributes.source_filename ? <details><summary>Workbook source and regulation basis</summary><p>{String(lines[0].attributes.source_filename)}</p><p>{String(lines[0].attributes.regulation_basis ?? "")}</p><p>Imported source basis; review amendments and operational quantities before publishing.</p></details> : null}</div>
         <div className="section-heading"><div><h2>{template.name} · {template.version}</h2><p>{lines.length} lines · {template.framework} / {template.category} · {template.published ? "Published" : locked ? "Retired / frozen" : "Editable draft"}</p></div><div className="template-actions">{!locked && <><button className="secondary" disabled={busy} onClick={() => setEditing("new")}>Add line</button><button className="primary" disabled={busy || !lines.length} onClick={() => { if (window.confirm("Publish this version? It will be frozen and replace the currently published version for this kit family.")) void command("publish_template", { template_id: template.id }); }}>Publish version</button></>}{template.published && <button className="secondary" disabled={busy} onClick={() => { if (window.confirm("Retire this version from new checks? Existing checks are preserved.")) void command("retire_template", { template_id: template.id }); }}>Retire version</button>}</div></div>
         {editing && <form key={editing === "new" ? "new" : editing.id} className="template-form" onSubmit={(e) => { e.preventDefault(); void save(new FormData(e.currentTarget)); }}>

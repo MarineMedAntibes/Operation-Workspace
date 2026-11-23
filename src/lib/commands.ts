@@ -1,13 +1,16 @@
 import { z } from "zod";
 import type { Workspace, Batch } from "./types";
 import { addMonths, keepExisting, quantities, requiredPacks, validSupplyExpiry } from "./rules";
+import { workflowSchemas, applySlotCommand } from "./check-workflow";
+import { calculateFinance } from "./finance";
 
 const text = z.string().trim().min(1).max(500);
 const optional = z.string().trim().max(4000).default("");
 const contact = { name: text, email: z.union([z.email(), z.literal("")]).default(""), phone: optional, notes: optional };
 export const schemas = {
+  ...workflowSchemas,
   acknowledge_import_review: z.object({ check_id: text, reason: z.string().trim().min(1).max(4000) }),
-  edit_check_item: z.object({ item_id: text, substitute_description: z.string().trim().max(500).default(""), pack_description: optional, required_packs: z.coerce.number().finite().min(0).max(1000000), unit_price: z.coerce.number().finite().min(0).max(1000000), reason: z.string().trim().min(1).max(4000) }),
+  edit_check_item: z.object({ item_id: text, substitute_description: z.string().trim().max(500).default(""), pack_description: optional, required_packs: z.coerce.number().finite().min(0).max(1000000), unit_price: z.coerce.number().finite().min(0).max(1000000), reason: z.string().trim().min(1).max(4000),dose_route:z.string().trim().max(4000).optional(),uses:z.string().trim().max(4000).optional(),side_effects:z.string().trim().max(4000).optional() }),
   create_template: z.object({ name: text, framework: z.enum(["MSN", "Malta", "ALL"]), category: text, version: text, source_template_id: text.optional() }),
   save_template_item: z.object({ template_id: text, item_id: text.optional(), source_code: text, description: text, location: optional, pack_description: optional, baseline_packs: z.coerce.number().finite().min(0).max(1000000), scaling: z.enum(["fixed", "band"]), unit_price: z.coerce.number().finite().min(0).max(1000000), attributes: z.record(z.string(), z.unknown()).default({}) }),
   delete_template_item: z.object({ template_id: text, item_id: text }),
@@ -37,6 +40,72 @@ export function applyDemoCommand(original: Workspace, input: unknown): Workspace
   const p = payload as Record<string, unknown>;
   const data = structuredClone(original);
   const id = crypto.randomUUID();
+  if (action in workflowSchemas) {
+    const item=data.check_items.find(i=>i.id===p.item_id);
+    const check=data.kit_checks.find(c=>c.id===(p.check_id ?? item?.check_id));
+    if (!check) throw new Error("Check not found.");
+    if(action==='save_check_header') {
+      const header=workflowSchemas.save_check_header.parse(p);
+      if(check.status!=='assessing'||data.invoices?.some(i=>i.check_id===check.id))throw new Error('Reopen assessment before changing check settings.');
+      const oldCrew=check.crew;
+      Object.assign(check,{check_date:header.check_date,valid_until:header.valid_until,crew:header.crew,job_type:header.job_type,loyalty:header.loyalty});
+      for(const line of data.check_items.filter(i=>i.check_id===check.id)){
+        const template=data.template_items.find(t=>t.id===line.template_item_id);
+        if(oldCrew!==header.crew&&template&&!line.attributes?.edited_at&&line.attributes?.source_override_add_packs==null)line.required_packs=requiredPacks(template.baseline_packs,template.scaling,header.crew);
+        line.assessment_state='unreviewed';
+        for(const batch of data.batches.filter(b=>b.check_item_id===line.id&&!b.voided_at&&b.kind!=='supplied')){
+          batch.voided_at=new Date().toISOString();data.batches.push({...batch,id:crypto.randomUUID(),voided_at:null,kind:keepExisting(batch.expiry,batch.no_expiry,header.valid_until)?'kept':'removed',notes:`Reassessed after header correction: ${header.reason}`});
+        }
+      }
+      check.attributes={...check.attributes,header_correction_reason:header.reason};
+      const settings=check.attributes.workflow as {finance?:Record<string,unknown>}|undefined;
+      if(settings?.finance){for(const key of ['standard_fee','assessment_fee_override','loyalty_discount_percent','proceeds_credit_percent','new_build_kit_price'])delete settings.finance[key];settings.finance.pricing_reviewed=false;settings.finance.tax_reviewed=false;}
+    } else if (action==='save_line_slots') applySlotCommand(data,check,item!,workflowSchemas.save_line_slots.parse(p));
+    else if (action==='save_check_setup') {
+      const setup=workflowSchemas.save_check_setup.parse(p).workflow;
+      const old=check.attributes?.workflow as {finance?:unknown}|undefined;
+      if(check.status!=='assessing' && JSON.stringify(old?.finance??{})!==JSON.stringify(setup.finance)) throw new Error('Revise the quote before changing approved pricing.');
+      check.attributes={...check.attributes,workflow:setup};
+    } else if(action==='revise_quote') {
+      if(check.status==='complete'||data.invoices?.some(i=>i.check_id===check.id)) throw new Error('Completed or invoiced checks require a separate correction.');
+      data.quotes.filter(q=>q.check_id===check.id&&!q.superseded_at).forEach(q=>{q.superseded_at=new Date().toISOString();});
+      check.status='assessing';
+    } else if(action==='prepare_quote') {
+      if(check.status!=='assessing'||check.attributes?.review_required||data.check_items.some(i=>i.check_id===check.id&&(i.assessment_state==='unreviewed'||i.attributes?.requirement_unknown||i.attributes?.price_missing))) throw new Error('Review every assessment line and imported issues first.');
+      const snapshot=calculateFinance(data,check,'quote');
+      if(snapshot.pricing_missing||!snapshot.tax_reviewed||(check.attributes?.workflow as {finance?:{pricing_reviewed?:boolean}}|undefined)?.finance?.pricing_reviewed!==true) throw new Error('Review pricing and tax in Setup.');
+      data.quotes.push({id,check_id:check.id,status:'draft',subtotal:snapshot.subtotal,lines:snapshot.lines,financials:{...snapshot},created_at:new Date().toISOString()});check.status='awaiting_approval';check.assessment_fee=snapshot.assessment_fee;
+    } else if(action==='save_finance_tracker') {
+      const tracker=workflowSchemas.save_finance_tracker.parse(p).tracker;
+      if((tracker.invoice_sent_at||tracker.invoice_paid_at)&&!data.invoices?.some(i=>i.check_id===check.id))throw new Error('Prepare an invoice snapshot before recording invoice dates.');
+      check.attributes={...check.attributes,finance_tracker:tracker};
+      for(const invoice of data.invoices?.filter(i=>i.check_id===check.id)??[])invoice.status=tracker.invoice_paid_at?'paid':tracker.invoice_sent_at?'issued':'draft';
+    }
+    else if(action==='create_invoice') {
+      const quote=data.quotes.find(q=>q.check_id===check.id&&q.status==='approved'&&!q.superseded_at);
+      if(check.status!=='complete'||!quote) throw new Error('Finish packing and approve the quote first.');
+      if(data.invoices?.some(i=>i.check_id===check.id)) throw new Error('This check already has an invoice snapshot.');
+      if(data.invoices?.some(i=>i.invoice_number===p.invoice_number)) throw new Error('Invoice number already exists.');
+      const snapshot=calculateFinance(data,check,'invoice');
+      if(snapshot.pricing_missing||!snapshot.tax_reviewed) throw new Error('Review invoice pricing and tax.');
+      (data.invoices??=[]).push({id,check_id:check.id,quote_id:quote.id,invoice_number:String(p.invoice_number),status:'draft',financials:{...snapshot},created_at:new Date().toISOString()});
+    } else if(action==='save_legacy_item') {
+      if(check.status==='complete') throw new Error('Completed checks are locked.');
+      const input=workflowSchemas.save_legacy_item.parse(p);
+      const entry={...input,id:input.item_id??id,expiry:input.expiry||null};
+      const index=data.legacy_items?.findIndex(i=>i.id===input.item_id&&i.check_id===check.id)??-1;
+      if(input.item_id&&index<0) throw new Error('Legacy item not found.');
+      if(index<0)(data.legacy_items??=[]).push(entry);else data.legacy_items![index]=entry;
+    } else if(action==='delete_legacy_item') {
+      if(check.status==='complete') throw new Error('Completed checks are locked.');
+      data.legacy_items=data.legacy_items?.filter(i=>i.id!==p.item_id||i.check_id!==check.id);
+    } else if(action==='reconcile_stock') {
+      const input=workflowSchemas.reconcile_stock.parse(p);
+      for(const g of input.groups){const target=data.check_items.find(i=>i.id===g.item_id&&i.check_id===check.id);if(!target)throw new Error('Match must belong to this check.');applySlotCommand(data,check,target,{...g,phase:'arrival',reviewed:false,notes:`Reconciled from ${input.source_name}`});}
+      check.attributes={...check.attributes,reconciliation:{...input,confirmed_at:new Date().toISOString()}};
+    }
+    return data;
+  }
   if (action === "create_template") {
     if (data.kit_templates.some((t) => t.framework === p.framework && t.category === p.category && t.version === p.version)) throw new Error("This version already exists.");
     const source = p.source_template_id ? data.kit_templates.find((t) => t.id === p.source_template_id) : undefined;
@@ -97,6 +166,7 @@ export function applyDemoCommand(original: Workspace, input: unknown): Workspace
       const attrs = item.attributes ?? {};
       const original = String(attrs.original_description ?? item.description);
       item.attributes = { ...attrs, original_description: original, original_required_packs: attrs.original_required_packs ?? item.required_packs, original_unit_price: attrs.original_unit_price ?? item.unit_price, original_pack_description: attrs.original_pack_description ?? item.pack_description, substitute_description: p.substitute_description, override_reason: p.reason, edited_at: new Date().toISOString(), requirement_unknown: false, price_missing: false };
+      for(const key of ['dose_route','uses','side_effects'])if(p[key]!==undefined){item.attributes[`original_${key}`]=attrs[`original_${key}`]??attrs[key]??'';item.attributes[key]=p[key];}
       item.description = String(p.substitute_description || original);
       item.pack_description = String(p.pack_description);
       item.required_packs = Number(p.required_packs); item.unit_price = Number(p.unit_price);
@@ -131,7 +201,7 @@ export function applyDemoCommand(original: Workspace, input: unknown): Workspace
       check.status = "awaiting_approval";
       check.assessment_fee = Number(p.assessment_fee);
     } else if (action === "approve_quote") {
-      const quote = data.quotes.findLast((q) => q.check_id === check.id && q.status === "draft");
+      const quote = data.quotes.findLast((q) => q.check_id === check.id && q.status === "draft" && !q.superseded_at);
       if (check.status !== "awaiting_approval" || !quote) throw new Error("No quote awaiting approval.");
       quote.status = "approved"; check.status = "packing";
     } else if (action === "finish") {

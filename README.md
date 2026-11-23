@@ -1,4 +1,4 @@
-# Marine Medical workspace — first working slice
+# Marine Medical operations workspace
 
 Independent Next.js app, intended for Vercel with Supabase Auth/Postgres. All
 approved staff share the same access level. No real client/vendor records or
@@ -11,8 +11,14 @@ material, not a runtime dependency.
 - Add clients, vessels, vendors and supplier products.
 - Generate a check and its requirement snapshots atomically from a published
   template, with crew bands and per-line fixed/scaled requirements.
-- Record multiple existing batches, expiry decisions and explicit line review.
-- Prepare a **net pilot quote**, record client approval and unlock packing.
+- Fast arrival and packing entry with two expiry slots per line and stage,
+  MM/YY or MM/YYYY input, NED, keyboard Save & next, bag colours and clear flags.
+- Setup captures critical equipment, telemedical/booklet answers, billing,
+  delivery, tax review and the source assessment/loyalty/proceeds pricing inputs.
+- Reviewed reconciliation from Excel, CSV or pasted inventory. Suggestions never
+  write stock without explicit match confirmation. Unmatched items stay separate.
+- Cost analysis, frozen quote revisions, recorded approval, invoice draft
+  snapshots and an iPaidThat copy-text/payment tracker.
 - Record partial supply over multiple sessions; block excess supply and premature
   completion. Working directory shows retained plus supplied stock.
 - Forecast from the latest completed medical check per vessel/framework/category,
@@ -32,25 +38,85 @@ material, not a runtime dependency.
 - Reviewed archive import preparation, source-file register and visible import
   issues. Vessel names can be interim billing client names without inferring owners.
 
-## Still to implement before operational use
+## Operational boundaries
 
-- Client/vessel editing, batch corrections/reversals, reopening completed checks
-  with quote revisions, and assessed not-applicable controls in UI.
-- Legacy-format reconciliation and resolution of ambiguous quantities, expiries
-  and source dates. Imported workbook snapshots require explicit review before
-  operational use; source files do not establish quote approval or certification.
-- Additional equipment/oxygen inspections and service dates.
-- Automatic assessment/loyalty/proceeds pricing, new-build pricing, extras,
-  tax, shipping/packaging, customer-ready quotes, quote revisions and invoices.
-  The source price book remains in the reference archive; the pilot explicitly
-  asks for a reviewed net assessment fee instead of guessing.
-- Certificate issuance, signatures, unique numbering, stored document snapshots,
-  PDFs and pickup/shipping tracking. A printable working directory is included;
-  **medical packing complete is not overall compliance or certificate issuance**.
+- Historical workbooks still require review where stock units, dates or item
+  identity are ambiguous. Matching suggestions are not clinical equivalence checks.
+- Certificates are draft documents for the approved review/signing process;
+  the app does not apply signatures or claim regulatory compliance automatically.
+- Actual sending, e-invoicing and settlement remain in iPaidThat. The app keeps
+  draft financial snapshots, copy text, external references and recorded dates.
+- Completed/invoiced checks remain locked. Corrections after invoicing need a
+  separate controlled adjustment; quote revisions are available before completion.
 - Next-year rollover, multiple distinct physical kits of the same family on one
   vessel, richer vendor mapping and full price-history management.
-- Storage transfer of archived attachments, live Supabase integration verification,
-  live user acceptance and browser/device QA.
+- Archived attachment transfer and live user acceptance remain separate from
+  local regression testing. Never use unreviewed source data as a verified check.
+
+## Enable the completed usability workflow
+
+For an existing database with the first three migrations already applied, run
+**`private-import/workflow-upgrade.sql` once** in Supabase SQL Editor. This is one
+small transaction containing the new schema and private rate suggestions. Existing
+clients, vessels, checks and imports remain intact; do not rerun the 44-file import.
+The app shows an upgrade notice until the new tables are available.
+
+For a fresh checkout, apply migrations in filename order. The public schema file
+is `supabase/migrations/202611200003_workflow.sql`. Internal rates are separate
+private data: use `scripts/prepare-rate-import.py --package <handover-folder>` then
+`scripts/prepare-workflow-upgrade.py` to prepare the combined upgrade, or enter
+reviewed rates manually in each check's Setup. Suggested rates needing sign-off
+are marked. Pricing and tax review are explicit before quote preparation.
+
+Restart `npm run dev` after updating dependencies. The workflow is:
+
+1. **Setup:** dates/crew/job corrections, assessor, equipment, telemedical,
+   billing/delivery and finance inputs. Header corrections recheck quantities and
+   retained-stock expiry decisions, preserve overrides and reset pricing review.
+2. **Reconciliation:** upload XLSX/CSV or paste inventory; select worksheet/header
+   columns and confirm item/pack/expiry matches. Applying replaces arrival records
+   for confirmed lines only and retains previous records in the audit trail.
+3. **Arrival check:** two expiry slots, whole-pack counts, KEEP/REMOVE previews,
+   NED and Save & next. Zero packs explicitly records a shortage.
+4. **Cost analysis / Quote:** review item costs, sequential loyalty/proceeds credits,
+   goods/service split, supplementary lines, packaging/freight and reviewed VAT.
+   Invoice basis follows Excel's completed-line rule, not partial supplied quantities.
+   The full-job-as-proceeding choice controls fee credits and whether kit fulfilment
+   is priced; false produces the workbook Cost Analysis's fee-only result. It does
+   not establish client approval. Conflicting workbook tax/copy-text formulas are
+   replaced by the same explicitly reviewed per-kind VAT rates in every snapshot.
+5. **Pick & fill:** enter total supplied quantities for the two expiry groups.
+   For a price/quantity/pack-size change, use Revise quote, edit, prepare a new
+   snapshot and record approval. Old approval is preserved as superseded history.
+6. **Directory / Documents / Replaced items / Legacy items:** retain Excel order,
+   download original-format XLSX/PDF or CSV lists, and keep non-regulated stock
+   attached to the check without letting it satisfy regulated requirements.
+7. **Invoice:** freeze an invoice draft after packing, copy reviewed lines into
+   iPaidThat, and record the actual external reference and sent/paid dates.
+
+The Health check tab highlights missing setup, unknown source quantities/prices,
+crew-band discrepancies, equipment dates and incomplete assessments. These are
+data-readiness checks, not regulatory approval.
+
+### Original-format documents and PDF hosting
+
+Sanitized workbook assets preserve the five original layouts, styles, images and
+formulas. Client inputs, source prices/rate values and old formula caches are
+removed; exports fill actual check values. The PDF pipeline recalculates in
+LibreOffice, isolates the requested sheet and renders it without exposing the
+other sheets. Certificate output must remain one page; overflow is rejected.
+Unmapped custom rows are flagged rather than silently omitted.
+
+LibreOffice is installed on the current Windows computer. The server detects its
+standard installation path; `LIBREOFFICE_PATH` can override it. The supplied
+Dockerfile includes LibreOffice for a Node/container host. Standard Vercel hosting
+does not include that binary: XLSX exports work there, while server PDF generation
+needs a renderer-capable deployment. Excel can also export the downloaded sheets.
+
+`node scripts/verify-workflow.mjs` runs the fictional browser scenario against a
+separate development preview on port 3011. Start it with `QA_DIST_DIR=.qa/next`
+and `QA_DEMO_MODE=true` in the process environment. The override is development-only
+and ignored in production. Browser artifacts stay in ignored `.qa/`.
 
 ## Local fictional preview
 

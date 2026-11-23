@@ -1,0 +1,7 @@
+.git
+.next
+node_modules
+.env*
+private-import
+*.tsbuildinfo
+__pycache__

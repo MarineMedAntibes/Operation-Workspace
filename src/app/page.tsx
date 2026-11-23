@@ -5,6 +5,7 @@ import { demoWorkspace } from "@/lib/demo";
 import WorkspaceApp from "@/components/workspace-app";
 export const dynamic = "force-dynamic";
 export default async function Home() {
+  if (process.env.NODE_ENV === "development" && process.env.QA_DEMO_MODE === "true") return <WorkspaceApp initial={demoWorkspace()} demo />;
   if (!isConfigured()) {
     if (process.env.NODE_ENV !== "production" && process.env.DEMO_MODE === "true") return <WorkspaceApp initial={demoWorkspace()} demo />;
     return <main className="setup-page"><span className="eyebrow">MARINE MEDICAL</span><h1>Your workspace is ready to connect.</h1><p>Configure the Supabase URL and publishable key, run the migration, and invite your staff. See web/README.md for setup.</p><p>For a local fictional preview, set DEMO_MODE=true and run npm run dev.</p></main>;

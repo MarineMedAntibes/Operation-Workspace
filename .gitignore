@@ -6,3 +6,6 @@ private-import/
 *.tsbuildinfo
 .npm-cache/
 __pycache__/
+.qa/
+playwright-report/
+test-results/

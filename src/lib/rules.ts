@@ -29,7 +29,7 @@ export function validSupplyExpiry(expiry: string | null, noExpiry: boolean, vali
   return !!expiry && addMonths(expiry, 1) > addMonths(validUntil, -1);
 }
 export function quantities(item: CheckItem, batches: Batch[]) {
-  const own = batches.filter((b) => b.check_item_id === item.id);
+  const own = batches.filter((b) => b.check_item_id === item.id && !b.voided_at);
   const kept = own.filter((b) => b.kind === "kept").reduce((s, b) => s + Number(b.quantity), 0);
   const supplied = own.filter((b) => b.kind === "supplied").reduce((s, b) => s + Number(b.quantity), 0);
   const needed = item.assessment_state === "not_applicable" || item.kill_line ? 0 : Math.max(0, Number(item.required_packs) - kept);
