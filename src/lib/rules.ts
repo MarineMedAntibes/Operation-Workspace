@@ -4,10 +4,12 @@ export function crewBand(crew: number) {
   if (!Number.isInteger(crew) || crew < 1 || crew > 60) throw new Error("Crew must be between 1 and 60.");
   return [10, 20, 30, 40, 60].find((band) => crew <= band)!;
 }
-export function requiredPacks(baseline: number, scaling: "fixed" | "band", crew: number) {
+export function requiredPacks(baseline: number, scaling: "fixed" | "band", crew: number, maximum?: number) {
   if (!Number.isFinite(baseline) || baseline < 0) throw new Error("Invalid baseline quantity.");
   const band = crewBand(crew);
-  return scaling === "fixed" ? baseline : Math.round(baseline * band / 10);
+  if (scaling === "fixed") return baseline;
+  const scaled = Math.round(baseline * band / 10);
+  return maximum === undefined ? scaled : Math.min(scaled, maximum);
 }
 export function addMonths(date: string, months: number) {
   const parsed = new Date(date + "T00:00:00Z");

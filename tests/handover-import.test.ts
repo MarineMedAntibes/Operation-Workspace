@@ -45,7 +45,8 @@ test(`handover import (${mode}) preserves all five lists, duplicate bag lines an
     await db.query("insert into public.template_items select * from jsonb_populate_record(null::public.template_items,$1::jsonb)", [JSON.stringify(removed)]);
     // Clear review markers only in this isolated fixture so all five lists can be
     // exercised. This is not regulatory or price approval of the imported data.
-    await db.exec(`update public.template_items set attributes=jsonb_set(attributes,'{price_missing}','false'::jsonb);
+    await db.exec(`update public.template_items set attributes=attributes || '{"price_missing":false,"price_quantity_reviewed":true}'::jsonb,
+        baseline_packs=case when scaling='fixed' then round(baseline_packs) else baseline_packs end;
       insert into auth.users values ('00000000-0000-0000-0000-000000000001');
       insert into public.staff_members values ('00000000-0000-0000-0000-000000000001','Import regression tester');
       set role authenticated; set request.jwt.claim.sub='00000000-0000-0000-0000-000000000001';`);

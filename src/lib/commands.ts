@@ -3,24 +3,40 @@ import type { Workspace, Batch } from "./types";
 import { addMonths, keepExisting, quantities, requiredPacks, validSupplyExpiry } from "./rules";
 import { workflowSchemas, applySlotCommand } from "./check-workflow";
 import { calculateFinance } from "./finance";
+import { isTemplateLineReviewed, templateMaximumPacks, templatePriceKey } from "./template-review";
 
 const text = z.string().trim().min(1).max(500);
 const optional = z.string().trim().max(4000).default("");
 const contact = { name: text, email: z.union([z.email(), z.literal("")]).default(""), phone: optional, notes: optional };
+const client = z.object({ ...contact, billing_address: optional });
+const vessel = z.object({
+  name: text, client_id: z.union([text, z.literal("")]).default(""),
+  new_client: client.optional(), framework: z.enum(["MSN", "Malta", "Other"]),
+  flag_state: optional, crew: z.coerce.number().int().min(1).max(60), loyalty: z.boolean().default(false),
+});
+const product = z.object({
+  vendor_id: z.union([text, z.literal("")]), description: text, sku: optional, pack_description: optional,
+  price: z.preprocess(value => value === "" ? null : value, z.coerce.number().min(0).max(1000000).nullable()),
+});
 export const schemas = {
   ...workflowSchemas,
   acknowledge_import_review: z.object({ check_id: text, reason: z.string().trim().min(1).max(4000) }),
   edit_check_item: z.object({ item_id: text, substitute_description: z.string().trim().max(500).default(""), pack_description: optional, required_packs: z.coerce.number().finite().min(0).max(1000000), unit_price: z.coerce.number().finite().min(0).max(1000000), reason: z.string().trim().min(1).max(4000),dose_route:z.string().trim().max(4000).optional(),uses:z.string().trim().max(4000).optional(),side_effects:z.string().trim().max(4000).optional() }),
   create_template: z.object({ name: text, framework: z.enum(["MSN", "Malta", "ALL"]), category: text, version: text, source_template_id: text.optional() }),
-  save_template_item: z.object({ template_id: text, item_id: text.optional(), source_code: text, description: text, location: optional, pack_description: optional, baseline_packs: z.coerce.number().finite().min(0).max(1000000), scaling: z.enum(["fixed", "band"]), unit_price: z.coerce.number().finite().min(0).max(1000000), attributes: z.record(z.string(), z.unknown()).default({}) }),
+  save_template_item: z.object({ template_id: text, item_id: text.optional(), source_code: text, description: text, location: optional, pack_description: optional, baseline_packs: z.coerce.number().finite().min(0).max(1000000), scaling: z.enum(["fixed", "band"]), unit_price: z.coerce.number().finite().min(0).max(1000000), attributes: z.record(z.string(), z.unknown()).default({}), share_price: z.boolean().optional() }),
+  delete_template: z.object({ template_id: text }),
   delete_template_item: z.object({ template_id: text, item_id: text }),
   publish_template: z.object({ template_id: text }),
   retire_template: z.object({ template_id: text }),
   set_kill_line: z.object({ item_id: text, kill_line: z.boolean() }),
-  create_client: z.object({ ...contact, billing_address: optional }),
+  create_client: client,
   create_vendor: z.object(contact),
-  create_vessel: z.object({ name: text, client_id: text, framework: z.enum(["MSN", "Malta", "Other"]), flag_state: optional, crew: z.coerce.number().int().min(1).max(60), loyalty: z.boolean().default(false) }),
-  create_vendor_product: z.object({ vendor_id: text, description: text, sku: optional, pack_description: optional, price: z.coerce.number().min(0).max(1000000) }),
+  create_vessel: vessel,
+  create_vendor_product: product.extend({ vendor_id: text }),
+  update_client: client.extend({ id: text, active_season: z.string().regex(/^(20\d{2})?$/) }),
+  update_vendor: z.object({ ...contact, id: text }),
+  update_vessel: vessel.extend({ id: text }),
+  update_vendor_product: product.extend({ id: text }),
   create_check: z.object({ vessel_id: text, template_id: text, check_date: z.iso.date(), job_type: z.enum(["Routine Refill", "Category Swap", "Restructure", "New Build"]) }),
   add_batch: z.object({ item_id: text, quantity: z.coerce.number().int().positive().max(100000), expiry: z.union([z.iso.date(), z.literal("")]).default(""), no_expiry: z.boolean().default(false), notes: optional }).refine((v) => v.no_expiry ? !v.expiry : !!v.expiry && v.expiry.endsWith("-01"), "Enter an expiry month or select no expiry."),
   mark_assessed: z.object({ item_id: text, state: z.enum(["reviewed", "not_applicable"]) }),
@@ -32,6 +48,18 @@ export type Action = keyof typeof schemas;
 export function parseCommand(input: unknown) {
   const command = z.object({ action: z.enum(Object.keys(schemas) as [Action, ...Action[]]), payload: z.unknown() }).parse(input);
   return { action: command.action, payload: schemas[command.action].parse(command.payload) };
+}
+
+function isEditableTemplate(data: Workspace, templateId: string) {
+  const template = data.kit_templates.find(t => t.id === templateId);
+  return !!template && !template.published && !template.ever_published && !data.kit_checks.some(c => c.template_id === templateId);
+}
+
+function applyParentPrice(line: Workspace["template_items"][number], price: number) {
+  if (line.unit_price === price && line.attributes.price_missing !== true) return;
+  line.unit_price = price;
+  line.attributes.price_missing = false;
+  delete line.attributes.price_quantity_reviewed;
 }
 
 // Fictional local preview only. The live database independently enforces all transitions.
@@ -51,7 +79,7 @@ export function applyDemoCommand(original: Workspace, input: unknown): Workspace
       Object.assign(check,{check_date:header.check_date,valid_until:header.valid_until,crew:header.crew,job_type:header.job_type,loyalty:header.loyalty});
       for(const line of data.check_items.filter(i=>i.check_id===check.id)){
         const template=data.template_items.find(t=>t.id===line.template_item_id);
-        if(oldCrew!==header.crew&&template&&!line.attributes?.edited_at&&line.attributes?.source_override_add_packs==null)line.required_packs=requiredPacks(template.baseline_packs,template.scaling,header.crew);
+        if(oldCrew!==header.crew&&template&&!line.attributes?.edited_at&&line.attributes?.source_override_add_packs==null)line.required_packs=requiredPacks(template.baseline_packs,template.scaling,header.crew,templateMaximumPacks(template.attributes));
         line.assessment_state='unreviewed';
         for(const batch of data.batches.filter(b=>b.check_item_id===line.id&&!b.voided_at&&b.kind!=='supplied')){
           batch.voided_at=new Date().toISOString();data.batches.push({...batch,id:crypto.randomUUID(),voided_at:null,kind:keepExisting(batch.expiry,batch.no_expiry,header.valid_until)?'kept':'removed',notes:`Reassessed after header correction: ${header.reason}`});
@@ -112,33 +140,100 @@ export function applyDemoCommand(original: Workspace, input: unknown): Workspace
     if (p.source_template_id && !source) throw new Error("Source template not found.");
     if (source && (source.framework !== p.framework || source.category !== p.category)) throw new Error("A new version must keep its source framework and category.");
     data.kit_templates.push({ id, name: String(p.name), framework: String(p.framework), category: String(p.category), version: String(p.version), published: false, ever_published: false });
-    if (source) for (const line of original.template_items.filter((i) => i.template_id === source.id)) data.template_items.push({ ...structuredClone(line), id: crypto.randomUUID(), template_id: id });
-  } else if (["save_template_item", "delete_template_item", "publish_template", "retire_template"].includes(action)) {
+    if (source) for (const line of original.template_items.filter((i) => i.template_id === source.id)) {
+      const copy = structuredClone(line);
+      delete copy.attributes.price_quantity_reviewed;
+      const price = data.template_sell_prices?.find(parent => parent.item_key === templatePriceKey(copy.attributes.item_id) &&
+        parent.pack_key === templatePriceKey(copy.pack_description));
+      if (price) applyParentPrice(copy, price.unit_price);
+      data.template_items.push({ ...copy, id: crypto.randomUUID(), template_id: id });
+    }
+  } else if (["save_template_item", "delete_template_item", "delete_template", "publish_template", "retire_template"].includes(action)) {
     const template = data.kit_templates.find((t) => t.id === p.template_id);
     if (!template) throw new Error("Template not found.");
     if (action === "publish_template") {
       if (!data.template_items.some((i) => i.template_id === template.id)) throw new Error("Template has no items.");
       if (data.template_items.some((i) => i.template_id === template.id && i.attributes.price_missing === true)) throw new Error("Review missing sell prices before publishing.");
+      if (data.template_items.some((i) => i.template_id === template.id && !isTemplateLineReviewed(i))) throw new Error("Review prices and quantities on every line before publishing.");
       for (const t of data.kit_templates) if (t.framework === template.framework && t.category === template.category) { if (t.published) t.ever_published = true; t.published = false; }
       template.published = true; template.ever_published = true;
     } else if (action === "retire_template") { if (template.published) template.ever_published = true; template.published = false; }
     else {
-      if (template.published || template.ever_published || data.kit_checks.some((c) => c.template_id === template.id)) throw new Error("Published or used templates are immutable. Create a new version.");
+      if (!isEditableTemplate(data, template.id)) throw new Error("Published or used templates are immutable. Create a new version.");
+      if (action === "delete_template") {
+        data.template_items = data.template_items.filter(line => line.template_id !== template.id);
+        data.kit_templates = data.kit_templates.filter(t => t.id !== template.id);
+        return data;
+      }
       const index = data.template_items.findIndex((i) => i.id === p.item_id && i.template_id === template.id);
       if (p.item_id && index < 0) throw new Error("Template item not found.");
       if (action === "delete_template_item") data.template_items.splice(index, 1);
       else {
         if (data.template_items.some((i) => i.template_id === template.id && i.source_code === p.source_code && i.id !== p.item_id)) throw new Error("Line key already exists.");
-        const line = { ...p, id: p.item_id || id } as Workspace["template_items"][number];
+        const { share_price, item_id, ...values } = schemas.save_template_item.parse(payload);
+        const line = { ...values, id: item_id || id };
+        const maximum = templateMaximumPacks(line.attributes);
+        if (line.attributes.maximum_packs !== undefined && (maximum === undefined || maximum > 1000000 ||
+          line.scaling !== "band" || maximum < Math.round(line.baseline_packs) || line.attributes.requirement_unknown === true)) {
+          throw new Error("Enter a whole-pack maximum at least as large as the 10-crew quantity on a scaled line.");
+        }
+        const itemKey = templatePriceKey(line.attributes.item_id);
+        const packKey = templatePriceKey(line.pack_description);
+        line.unit_price = Number(line.unit_price.toFixed(4));
+        const parent = data.template_sell_prices?.find(price => price.item_key === itemKey && price.pack_key === packKey);
+        if (share_price) {
+          if (!itemKey || !packKey || line.attributes.price_missing === true) throw new Error("Enter an Item ID, pack breakdown and sell price to share a price.");
+          if (parent) parent.unit_price = line.unit_price;
+          else (data.template_sell_prices ??= []).push({ item_key: itemKey, pack_key: packKey, unit_price: line.unit_price });
+        } else if (parent && (line.unit_price !== parent.unit_price || line.attributes.price_missing === true)) {
+          throw new Error("This item uses a shared price. Enter the shared amount or select Update shared price.");
+        }
         if (index < 0) data.template_items.push(line); else data.template_items[index] = line;
+        if (share_price) for (const other of data.template_items) {
+          if (templatePriceKey(other.attributes.item_id) === itemKey && templatePriceKey(other.pack_description) === packKey &&
+            isEditableTemplate(data, other.template_id)) applyParentPrice(other, line.unit_price);
+        }
       }
     }
   } else if (action === "create_client") data.clients.push({ id, ...payload } as Workspace["clients"][number]);
   else if (action === "create_vendor") data.vendors.push({ id, ...payload } as Workspace["vendors"][number]);
-  else if (action === "create_vessel") {
-    if (!data.clients.some((c) => c.id === p.client_id)) throw new Error("Choose a client.");
-    data.vessels.push({ id, ...payload } as Workspace["vessels"][number]);
+  else if (action === "create_vessel" || action === "update_vessel") {
+    const { new_client, ...values } = vessel.parse(payload);
+    const existing = action === "update_vessel" ? data.vessels.find(row => row.id === p.id) : undefined;
+    if (action === "update_vessel" && !existing) throw new Error("Vessel not found.");
+    if (values.client_id && (new_client || !data.clients.some(c => c.id === values.client_id))) throw new Error("Choose a valid client.");
+    if (new_client) {
+      values.client_id = crypto.randomUUID();
+      data.clients.push({ id: values.client_id, ...new_client });
+    }
+    const fields = { ...values, client_id: values.client_id || null };
+    if (existing) Object.assign(existing, fields);
+    else data.vessels.push({ id, ...fields });
   } else if (action === "create_vendor_product") data.vendor_products.push({ id, ...payload } as Workspace["vendor_products"][number]);
+  else if (action === "update_client") {
+    const { id, active_season, ...fields } = schemas.update_client.parse(payload);
+    const row = data.clients.find(c => c.id === id);
+    if (!row) throw new Error("Client not found.");
+    const attributes = { ...row.attributes };
+    if (active_season) attributes.active_season = active_season;
+    else delete attributes.active_season;
+    Object.assign(row, fields, { attributes });
+  } else if (action === "update_vendor") {
+    const row = data.vendors.find(v => v.id === p.id);
+    if (!row) throw new Error("Vendor not found.");
+    Object.assign(row, payload);
+  } else if (action === "update_vendor_product") {
+    const fields = schemas.update_vendor_product.parse(payload);
+    const row = data.vendor_products.find(v => v.id === fields.id);
+    if (!row) throw new Error("Product not found.");
+    const vendor_id = fields.vendor_id || null;
+    if (vendor_id && !data.vendors.some(v => v.id === vendor_id)) throw new Error("Vendor not found.");
+    if (row.price !== fields.price || row.vendor_id !== vendor_id || (row.pack_description ?? "") !== fields.pack_description) {
+      row.attributes = { ...row.attributes, review_required: true };
+      delete row.attributes.unit_price;
+    }
+    Object.assign(row, fields, { vendor_id });
+  }
   else if (action === "create_check") {
     const vessel = data.vessels.find((v) => v.id === p.vessel_id);
     const template = data.kit_templates.find((t) => t.id === p.template_id && t.published);
@@ -147,7 +242,7 @@ export function applyDemoCommand(original: Workspace, input: unknown): Workspace
     if (!templateItems.length) throw new Error("Template has no items.");
     const check = { id, vessel_id: vessel.id, client_id: vessel.client_id, template_id: template.id, check_date: String(p.check_date), valid_until: addMonths(String(p.check_date), 12), crew: vessel.crew, job_type: String(p.job_type), status: "assessing" as const, notes: "", assessment_fee: 0, loyalty: vessel.loyalty };
     data.kit_checks.push(check);
-    for (const item of templateItems) data.check_items.push({ id: crypto.randomUUID(), check_id: id, template_item_id: item.id, source_code: item.source_code, description: item.description, location: item.location, pack_description: item.pack_description, required_packs: requiredPacks(item.baseline_packs, item.scaling, vessel.crew), unit_price: item.unit_price, assessment_state: "unreviewed", attributes: structuredClone(item.attributes), kill_line: false });
+    for (const item of templateItems) data.check_items.push({ id: crypto.randomUUID(), check_id: id, template_item_id: item.id, source_code: item.source_code, description: item.description, location: item.location, pack_description: item.pack_description, required_packs: requiredPacks(item.baseline_packs, item.scaling, vessel.crew, templateMaximumPacks(item.attributes)), unit_price: item.unit_price, assessment_state: "unreviewed", attributes: structuredClone(item.attributes), kill_line: false });
   } else {
     const item = data.check_items.find((i) => i.id === p.item_id);
     const check = data.kit_checks.find((c) => c.id === (item?.check_id ?? p.check_id));
