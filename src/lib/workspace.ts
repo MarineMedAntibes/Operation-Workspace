@@ -1,9 +1,12 @@
 import "server-only";
+import type { User } from "@supabase/supabase-js";
 import { supabase } from "./supabase";
 import type { Workspace } from "./types";
-export async function loadWorkspace(): Promise<Workspace> {
-  const db = await supabase();
-  const { data: { user } } = await db.auth.getUser();
+type VerifiedSession = { db: Awaited<ReturnType<typeof supabase>>; user: User };
+
+export async function loadWorkspace(session?: VerifiedSession): Promise<Workspace> {
+  const db = session?.db ?? await supabase();
+  const user = session?.user ?? (await db.auth.getUser()).data.user;
   if (!user) throw new Error("Sign in required.");
   const { data: staff, error } = await db.from("staff_members").select("name").eq("id", user.id).maybeSingle();
   if (error || !staff) throw new Error("Your account has not been granted staff access.");

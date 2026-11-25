@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { Suspense } from "react";
 import { isConfigured, supabase } from "@/lib/supabase";
 import { loadWorkspace } from "@/lib/workspace";
 import { demoWorkspace } from "@/lib/demo";
@@ -13,6 +14,12 @@ export default async function Home() {
   const db = await supabase();
   const { data: { user } } = await db.auth.getUser();
   if (!user) redirect("/login");
-  try { return <WorkspaceApp initial={await loadWorkspace()} demo={false} />; }
+  return <Suspense fallback={<main className="setup-page" role="status"><h1>Loading your workspace…</h1></main>}>
+    <SignedInWorkspace session={{ db, user }} />
+  </Suspense>;
+}
+
+async function SignedInWorkspace({ session }: { session: NonNullable<Parameters<typeof loadWorkspace>[0]> }) {
+  try { return <WorkspaceApp initial={await loadWorkspace(session)} demo={false} />; }
   catch (error) { return <main className="setup-page"><h1>Workspace access</h1><p>{error instanceof Error ? error.message : "Unable to load workspace."}</p><a href="/login">Return to sign in</a></main>; }
 }

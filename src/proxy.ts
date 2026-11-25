@@ -14,7 +14,7 @@ export async function proxy(request: NextRequest) {
       values.forEach(({ name, value, options }) => response.cookies.set(name, value, options));
     },
   } });
-  await db.auth.getUser();
+  await db.auth.getClaims();
   response.headers.set("Cache-Control", "private, no-store");
   return response;
 }

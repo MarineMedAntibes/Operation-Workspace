@@ -44,7 +44,7 @@ export async function POST(request: Request) {
       if(itemError||batchError)throw new Error("Saved, but this line could not refresh. Reload before editing again.");
       return NextResponse.json({partial:"line",item,batches},{headers:{"Cache-Control":"no-store"}});
     }
-    return NextResponse.json(await loadWorkspace(), { headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json(await loadWorkspace({ db, user }), { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     return NextResponse.json({ error: error instanceof ZodError ? error.issues[0]?.message : error instanceof Error ? error.message : "Unable to save." }, { status: 400 });
   }
