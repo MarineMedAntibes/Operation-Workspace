@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { TemplateItem, Workspace } from "@/lib/types";
+import type { Template, TemplateItem, Workspace } from "@/lib/types";
 import type { Action } from "@/lib/commands";
 import { requiredPacks } from "@/lib/rules";
 import { isTemplateLineReviewed, templateCrewBands, templateLineIssues, templateMaximumPacks, templatePriceKey } from "@/lib/template-review";
@@ -9,6 +9,11 @@ import DraftForm from "./draft-form";
 import { inWorkbookOrder, workbookPosition } from "@/lib/workbook-order";
 
 const packPrice = new Intl.NumberFormat("en-IE", { style: "currency", currency: "EUR", maximumFractionDigits: 4 });
+
+function templateLabel(template: Template) {
+  const importedDraft = !template.published && !template.ever_published && /^handover-v\d+[a-z]?-[0-9a-f]{8}$/i.test(template.version);
+  return importedDraft ? template.name : `${template.name} · ${template.version}`;
+}
 
 type Props = { data: Workspace; demo?: boolean; busy: boolean; dirty: boolean; onDirtyChange: (dirty: boolean) => void; serverError?: string; command: (action: Action, payload: Record<string, unknown>) => Promise<boolean | undefined> };
 export default function TemplatesPage({ data, demo, busy, dirty, onDirtyChange, serverError, command }: Props) {
@@ -145,9 +150,9 @@ export default function TemplatesPage({ data, demo, busy, dirty, onDirtyChange, 
   const field = (name: string, label: string, value: unknown, type = "text", required = false) => <label key={name}>{label}<input name={name} type={type} defaultValue={String(value ?? "")} required={required} min={type === "number" ? 0 : undefined} step={type === "number" ? "any" : undefined} /></label>;
   return <>
     <section className="panel template-panel">
-      <div className="toolbar template-selection"><label>Template version<select aria-label="Template version" value={selected} onChange={(e) => { if (!canLeave()) return; setSelected(e.target.value); setManage(null); setEditing(null); setEditError(""); setSearch(""); setLastSaved(""); }}>{<option value="">Choose a template…</option>}{data.kit_templates.filter(t => showRetired || t.published || !t.ever_published || t.id === selected).sort((a, b) => a.name.localeCompare(b.name) || b.version.localeCompare(a.version)).map((t) => <option key={t.id} value={t.id}>{t.name} · {t.version} · {t.published ? "Published" : t.ever_published ? "Retired" : t.edit_locked ? "Locked draft" : "Draft"}</option>)}</select></label><label className="checkbox-label"><input type="checkbox" checked={showRetired} onChange={e => setShowRetired(e.target.checked)} />Show retired versions</label><button className="primary" disabled={busy} onClick={() => { if (!canLeave()) return; setCreating(!creating); setManage(null); setEditing(null); }}>New template / version</button></div>
+      <div className="toolbar template-selection"><label>Template version<select aria-label="Template version" value={selected} onChange={(e) => { if (!canLeave()) return; setSelected(e.target.value); setManage(null); setEditing(null); setEditError(""); setSearch(""); setLastSaved(""); }}>{<option value="">Choose a template…</option>}{data.kit_templates.filter(t => showRetired || t.published || !t.ever_published || t.id === selected).sort((a, b) => a.name.localeCompare(b.name) || b.version.localeCompare(a.version)).map((t) => <option key={t.id} value={t.id}>{templateLabel(t)} · {t.published ? "Published" : t.ever_published ? "Retired" : t.edit_locked ? "Locked draft" : "Draft"}</option>)}</select></label><label className="checkbox-label"><input type="checkbox" checked={showRetired} onChange={e => setShowRetired(e.target.checked)} />Show retired versions</label><button className="primary" disabled={busy} onClick={() => { if (!canLeave()) return; setCreating(!creating); setManage(null); setEditing(null); }}>New template / version</button></div>
       {creating && <DraftForm busy={busy} className="template-form" onDirtyChange={onDirtyChange} onSubmit={(e) => { e.preventDefault(); void create(new FormData(e.currentTarget)); }}>
-        <h2>Create a draft</h2><label>Copy lines from<select name="source_template_id" defaultValue={template?.id ?? ""} onChange={(e) => { const source = data.kit_templates.find((t) => t.id === e.target.value); if (source) for (const key of ["name", "framework", "category"] as const) { const field = e.currentTarget.form?.elements.namedItem(key) as HTMLInputElement | HTMLSelectElement | null; if (field) field.value = source[key]; } }}><option value="">Start with an empty list</option>{data.kit_templates.map((t) => <option key={t.id} value={t.id}>{t.name} · {t.version}</option>)}</select></label>
+        <h2>Create a draft</h2><label>Copy lines from<select name="source_template_id" defaultValue={template?.id ?? ""} onChange={(e) => { const source = data.kit_templates.find((t) => t.id === e.target.value); if (source) for (const key of ["name", "framework", "category"] as const) { const field = e.currentTarget.form?.elements.namedItem(key) as HTMLInputElement | HTMLSelectElement | null; if (field) field.value = source[key]; } }}><option value="">Start with an empty list</option>{data.kit_templates.map((t) => <option key={t.id} value={t.id}>{templateLabel(t)}</option>)}</select></label>
         {field("name", "Template name", template?.name, "text", true)}
         <label>Framework<select name="framework" defaultValue={template?.framework ?? "MSN"}>{["MSN", "Malta", "ALL"].map((s) => <option key={s}>{s}</option>)}</select></label>
         <label>Category<select name="category" defaultValue={template?.category ?? "CAT A"}>{["CAT A", "CAT B", "CAT C PLUS"].map((s) => <option key={s}>{s}</option>)}</select></label>
@@ -155,8 +160,8 @@ export default function TemplatesPage({ data, demo, busy, dirty, onDirtyChange, 
         <button className="primary" disabled={busy}>Create draft</button><button type="button" className="secondary" onClick={() => { if (canLeave()) setCreating(false); }}>Cancel</button>
       </DraftForm>}
       {template && <>
-        <div className="section-heading template-heading"><div><h2>{template.name} · {template.version}</h2><p>{lines.length} lines · {template.framework} / {template.category} · {template.published ? "Published" : frozen ? "Retired / frozen" : locked ? "Locked draft" : "Editable draft"}</p></div><div className="template-actions">{!frozen && managementReady && !locked && <button className="secondary" disabled={busy} onClick={() => openManagement("rename")}>Rename draft</button>}{!demo && managementReady && !frozen && <button className="secondary" disabled={busy} onClick={() => openManagement(locked ? "unlock" : "lock")}>{locked ? "Unlock draft" : "Lock draft"}</button>}{!locked && <><button className="secondary" disabled={busy} onClick={() => openLine("new")}>Add line</button>{sharedPricingReady && <button className="secondary" disabled={busy} onClick={async () => {
-          if (canLeave() && window.confirm(`Delete draft ${template.name} ${template.version} and all its lines?`) &&
+        <div className="section-heading template-heading"><div><h2>{templateLabel(template)}</h2><p>{lines.length} lines · {template.framework} / {template.category} · {template.published ? "Published" : frozen ? "Retired / frozen" : locked ? "Locked draft" : "Editable draft"}</p></div><div className="template-actions">{!frozen && managementReady && !locked && <button className="secondary" disabled={busy} onClick={() => openManagement("rename")}>Rename draft</button>}{!demo && managementReady && !frozen && <button className="secondary" disabled={busy} onClick={() => openManagement(locked ? "unlock" : "lock")}>{locked ? "Unlock draft" : "Lock draft"}</button>}{!locked && <><button className="secondary" disabled={busy} onClick={() => openLine("new")}>Add line</button>{sharedPricingReady && <button className="secondary" disabled={busy} onClick={async () => {
+          if (canLeave() && window.confirm(`Delete draft ${templateLabel(template)} and all its lines?`) &&
             await command("delete_template", { template_id: template.id })) {
             setSelected(""); setEditing(null);
           }
@@ -184,6 +189,7 @@ export default function TemplatesPage({ data, demo, busy, dirty, onDirtyChange, 
           {!locked && <button className="primary" disabled={busy || !remaining.length} onClick={() => openLine(remaining[0])}>Review next line</button>}
         </div>
         <details className="template-provenance"><summary>Health and source{health.length ? ` - ${health.length} to review` : ""}</summary>
+          <p>Version ID {template.version}</p>
           {health.map(message => <p key={message}>{message}</p>)}
           {typeof lines[0]?.attributes.source_filename === "string" && <p>{lines[0].attributes.source_filename}</p>}
           {typeof lines[0]?.attributes.regulation_basis === "string" && <p>{lines[0].attributes.regulation_basis}</p>}
