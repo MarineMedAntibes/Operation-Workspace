@@ -2,17 +2,18 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { PGlite } from "@electric-sql/pglite";
+import { pgcrypto } from "@electric-sql/pglite/contrib/pgcrypto";
 import { applyDemoCommand } from "../src/lib/commands";
 import type { Workspace } from "../src/lib/types";
 
 test("versioned template RPC protects history, price review, staff access and retained kill lines", async () => {
- const db = new PGlite();
+ const db = new PGlite({ extensions: { pgcrypto } });
  try {
   await db.exec(`create role anon; create role authenticated; create schema auth;
    create table auth.users(id uuid primary key);
    create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;
    grant usage on schema auth to authenticated; grant execute on function auth.uid() to authenticated;`);
-  for (const file of ["202610270001_workspace.sql", "202611200001_templates.sql", "202611200002_check_edits.sql", "202611200003_workflow.sql", "202611240001_template_review.sql", "202611240002_template_shared_prices.sql", "202611240003_template_quantity_caps.sql", "202611250001_template_edit_revisions.sql"]) await db.exec(await readFile(new URL(`../supabase/migrations/${file}`, import.meta.url), "utf8"));
+  for (const file of ["202610270001_workspace.sql", "202611200001_templates.sql", "202611200002_check_edits.sql", "202611200003_workflow.sql", "202611240001_template_review.sql", "202611240002_template_shared_prices.sql", "202611240003_template_quantity_caps.sql", "202611250001_template_edit_revisions.sql", "202611250002_template_names_and_locks.sql"]) await db.exec(await readFile(new URL(`../supabase/migrations/${file}`, import.meta.url), "utf8"));
   const staff="00000000-0000-0000-0000-000000000001";
   await db.exec(`insert into auth.users values ('${staff}'); insert into public.staff_members values ('${staff}','Tester'); set role authenticated;`);
   const command=async(action:string,payload:object)=>(await db.query<{id:string}>("select public.workspace_command($1,$2::jsonb) as id",[action,JSON.stringify(payload)])).rows[0].id;
@@ -78,6 +79,18 @@ test("versioned template RPC protects history, price review, staff access and re
   assert.equal(Number(prices.rows[1].unit_price),4);
   await assert.rejects(()=>command("save_template_item",{...base,template_id:draftA,pack_description:"Box of 10",attributes:reviewed}),/uses a shared price/);
   const clone=await command("create_template",{name:"Cloned kit",framework:"MSN",category:"CAT A",version:"v2",source_template_id:draftB});
+  await command("rename_template",{template_id:draftB,name:"Revised draft"});
+  assert.equal((await db.query<{name:string}>("select name from public.kit_templates where id=$1",[draftB])).rows[0].name,"Revised draft");
+  const password="example only lock";
+  await command("lock_template",{template_id:draftB,password});
+  await assert.rejects(()=>db.query("select password_hash from public.template_edit_locks"),/permission denied/);
+  await assert.rejects(()=>command("rename_template",{template_id:draftB,name:"Blocked"}),/Unlock this draft/);
+  await assert.rejects(()=>command("delete_template",{template_id:draftB}),/Unlock this draft/);
+  await assert.rejects(()=>command("publish_template",{template_id:draftB}),/Unlock this draft/);
+  await assert.rejects(()=>command("save_template_item",{...base,template_id:draftA,pack_description:"Box of 10",unit_price:20,attributes:reviewed,share_price:true}),/matching draft is locked/);
+  await assert.rejects(()=>command("unlock_template",{template_id:draftB,password:"wrong passphrase"}),/Incorrect template passphrase/);
+  await command("unlock_template",{template_id:draftB,password});
+  assert.equal((await db.query<{edit_locked:boolean}>("select edit_locked from public.kit_templates where id=$1",[draftB])).rows[0].edit_locked,false);
   await command("delete_template",{template_id:draftB});
   assert.equal((await db.query("select id from public.template_items where template_id=$1",[draftB])).rows.length,0);
   assert.equal((await db.query("select id from public.template_items where template_id=$1",[clone])).rows.length,2);

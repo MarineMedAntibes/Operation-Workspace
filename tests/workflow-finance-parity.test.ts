@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
 import test from "node:test";
 import { PGlite } from "@electric-sql/pglite";
+import { pgcrypto } from "@electric-sql/pglite/contrib/pgcrypto";
 import { calculateFinance, type FinanceResult } from "../src/lib/finance";
 import type { KitCheck, Workspace } from "../src/lib/types";
 
@@ -9,7 +10,7 @@ const staff="00000000-0000-0000-0000-000000000001";
 const totals = ["assessment_fee","items_subtotal","goods_net","service_net","extras_net","coolbox_net","shipping_net","handling_net","subtotal","vat","total"] as const;
 
 async function fixture(upgrade?:string) {
-  const db=new PGlite();
+  const db=new PGlite({ extensions: { pgcrypto } });
   await db.exec(`create role anon; create role authenticated; create schema auth;
     create table auth.users(id uuid primary key);
     create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;

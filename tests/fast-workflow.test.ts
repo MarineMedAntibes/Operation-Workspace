@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile, readdir } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
+import { pgcrypto } from "@electric-sql/pglite/contrib/pgcrypto";
 import { parseExpiryMonth, workflowSchemas } from "../src/lib/check-workflow";
 import { matchingCandidates, parseDelimited, reconciliationRows } from "../src/lib/reconciliation";
 import { demoWorkspace } from "../src/lib/demo";
@@ -19,7 +20,7 @@ test("reconciliation preserves CSV quoting and produces suggestions without conf
  assert.throws(()=>parseDelimited('"unfinished'));
 });
 test("two-slot saves are atomic, preserve correction history and reject stale edits",async()=>{
- const db=new PGlite();try{
+ const db=new PGlite({ extensions: { pgcrypto } });try{
   await db.exec(`create role anon;create role authenticated;create schema auth;create table auth.users(id uuid primary key);create function auth.uid() returns uuid language sql stable as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;grant usage on schema auth to authenticated;grant execute on function auth.uid() to authenticated;`);
   const dir=new URL("../supabase/migrations/",import.meta.url);for(const n of(await readdir(dir)).filter(n=>n.endsWith(".sql")).sort())await db.exec(await readFile(new URL(n,dir),"utf8"));
   const staff="00000000-0000-0000-0000-000000000001";await db.exec(`insert into auth.users values('${staff}');insert into public.staff_members values('${staff}','Tester');`);

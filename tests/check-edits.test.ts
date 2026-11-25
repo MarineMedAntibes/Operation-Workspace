@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
 import test from "node:test";
 import { PGlite } from "@electric-sql/pglite";
+import { pgcrypto } from "@electric-sql/pglite/contrib/pgcrypto";
 import { applyDemoCommand } from "../src/lib/commands";
 import { demoWorkspace } from "../src/lib/demo";
 
 test("per-check substitutes preserve master requirements, audit reasons and approved prices", async () => {
-  const db = new PGlite();
+  const db = new PGlite({ extensions: { pgcrypto } });
   try {
     await db.exec(`create role anon; create role authenticated; create schema auth;
       create table auth.users(id uuid primary key);

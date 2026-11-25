@@ -3,11 +3,12 @@ import { readFile, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import test from "node:test";
 import { PGlite } from "@electric-sql/pglite";
+import { pgcrypto } from "@electric-sql/pglite/contrib/pgcrypto";
 
 const seed = new URL("../private-import/handover-seed.sql", import.meta.url);
 for (const mode of ["full", "editor-parts"] as const) {
 test(`handover import (${mode}) preserves all five lists, duplicate bag lines and draft edits on rerun`, { skip: !existsSync(seed) }, async () => {
-  const db = new PGlite();
+  const db = new PGlite({ extensions: { pgcrypto } });
   try {
     await db.exec(`create role anon; create role authenticated; create schema auth;
       create table auth.users(id uuid primary key);

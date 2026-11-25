@@ -23,11 +23,15 @@ export async function POST(request: Request) {
     }
     const directoryCommand = command.action.startsWith("update_") ||
       (command.action === "create_vessel" && ("new_client" in command.payload || !("client_id" in command.payload) || !command.payload.client_id));
+    const catalogueCommand = ["assign_catalogue_item_id", "save_catalogue_product_code", "unlink_catalogue_product_code"].includes(command.action);
     const cappedLine = command.action === "save_template_item" && "attributes" in command.payload &&
       command.payload.attributes && Object.hasOwn(command.payload.attributes, "maximum_packs");
     const { error } = cappedLine
       ? await db.rpc("save_capped_template_item", { payload: command.payload })
-      : await db.rpc(directoryCommand ? "workspace_directory_command" : "workspace_command", command);
+      : await db.rpc(catalogueCommand ? "workspace_catalogue_command" : directoryCommand ? "workspace_directory_command" : "workspace_command", command);
+    if (catalogueCommand && error?.code === "PGRST202") {
+      return NextResponse.json({ error: "Apply the catalogue item codes migration in Supabase before saving links." }, { status: 503 });
+    }
     if (cappedLine && error?.code === "PGRST202") {
       return NextResponse.json({ error: "Apply the template quantity caps migration in Supabase before saving a cap." }, { status: 503 });
     }

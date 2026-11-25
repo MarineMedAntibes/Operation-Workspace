@@ -3,10 +3,11 @@ import { readFile, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import test from "node:test";
 import { PGlite } from "@electric-sql/pglite";
+import { pgcrypto } from "@electric-sql/pglite/contrib/pgcrypto";
 
 const parts = new URL("../private-import/completed-checks/", import.meta.url);
 test("historical archive import preserves source evidence, requires review and safely reruns", { skip: !existsSync(new URL("manifest.json", parts)) }, async () => {
-  const db = new PGlite();
+  const db = new PGlite({ extensions: { pgcrypto } });
   try {
     await db.exec(`create role anon; create role authenticated; create schema auth;
       create table auth.users(id uuid primary key);

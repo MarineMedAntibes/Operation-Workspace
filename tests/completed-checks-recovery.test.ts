@@ -3,10 +3,11 @@ import { existsSync } from "node:fs";
 import { readFile, readdir } from "node:fs/promises";
 import test from "node:test";
 import { PGlite } from "@electric-sql/pglite";
+import { pgcrypto } from "@electric-sql/pglite/contrib/pgcrypto";
 
 const recovery = new URL("../private-import/recover-andiamo.sql", import.meta.url);
 test("Andiamo recovery creates missing source before check and safely reruns", {skip: !existsSync(recovery)}, async () => {
-  const db = new PGlite();
+  const db = new PGlite({ extensions: { pgcrypto } });
   try {
     await db.exec(`create role anon; create role authenticated; create schema auth;
       create table auth.users(id uuid primary key);

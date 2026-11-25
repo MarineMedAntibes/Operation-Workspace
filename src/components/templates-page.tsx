@@ -20,6 +20,7 @@ export default function TemplatesPage({ data, demo, busy, dirty, onDirtyChange, 
   const [lastSaved, setLastSaved] = useState("");
   const [saveFailed, setSaveFailed] = useState(false);
   const [editError, setEditError] = useState("");
+  const [manage, setManage] = useState<"rename" | "lock" | "unlock" | null>(null);
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<TemplateItem | "new" | null>(null);
   const editHeading = useRef<HTMLHeadingElement>(null);
@@ -41,7 +42,9 @@ export default function TemplatesPage({ data, demo, busy, dirty, onDirtyChange, 
     }
   }, [data.template_items, nextReviewId]);
   const template = data.kit_templates.find((t) => t.id === selected);
-  const locked = !!template && (template.published || template.ever_published || data.kit_checks.some((c) => c.template_id === template.id));
+  const frozen = !!template && (template.published || template.ever_published || data.kit_checks.some(c => c.template_id === template.id));
+  const locked = frozen || template?.edit_locked === true;
+  const managementReady = demo || template?.edit_locked !== undefined;
   const lines = inWorkbookOrder(data.template_items.filter((i) => i.template_id === selected));
   const remaining = lines.filter(line => !isTemplateLineReviewed(line));
   const baseline = editing === "new" ? "1" : editing?.attributes.requirement_unknown ? "" : String(editing?.baseline_packs ?? "");
@@ -68,7 +71,29 @@ export default function TemplatesPage({ data, demo, busy, dirty, onDirtyChange, 
     setEditError("");
     setSaveFailed(false);
     setCreating(false);
+    setManage(null);
     setEditing(line);
+  }
+  function openManagement(action: "rename" | "lock" | "unlock") {
+    if (!canLeave()) return;
+    setCreating(false);
+    setEditing(null);
+    setEditError("");
+    setManage(action);
+  }
+  async function saveManagement(element: HTMLFormElement) {
+    if (!template || !manage) return;
+    setEditError("");
+    const form = new FormData(element);
+    const password = String(form.get("password") ?? "");
+    if (manage === "lock" && password !== form.get("confirm_password")) {
+      setEditError("The passphrases do not match.");
+      return;
+    }
+    const action = manage === "rename" ? "rename_template" : manage === "lock" ? "lock_template" : "unlock_template";
+    const payload = { template_id: template.id, ...(manage === "rename" ? { name: form.get("name") } : { password }) };
+    if (manage !== "rename") element.reset();
+    if (await command(action, payload)) setManage(null);
   }
   async function create(form: FormData) {
     const payload = Object.fromEntries(form.entries());
@@ -120,7 +145,7 @@ export default function TemplatesPage({ data, demo, busy, dirty, onDirtyChange, 
   const field = (name: string, label: string, value: unknown, type = "text", required = false) => <label key={name}>{label}<input name={name} type={type} defaultValue={String(value ?? "")} required={required} min={type === "number" ? 0 : undefined} step={type === "number" ? "any" : undefined} /></label>;
   return <>
     <section className="panel template-panel">
-      <div className="toolbar template-selection"><label>Template version<select aria-label="Template version" value={selected} onChange={(e) => { if (!canLeave()) return; setSelected(e.target.value); setEditing(null); setEditError(""); setSearch(""); setLastSaved(""); }}>{<option value="">Choose a template…</option>}{data.kit_templates.filter(t => showRetired || t.published || !t.ever_published || t.id === selected).sort((a, b) => a.name.localeCompare(b.name) || b.version.localeCompare(a.version)).map((t) => <option key={t.id} value={t.id}>{t.name} · {t.version} · {t.published ? "Published" : t.ever_published ? "Retired" : "Draft"}</option>)}</select></label><label className="checkbox-label"><input type="checkbox" checked={showRetired} onChange={e => setShowRetired(e.target.checked)} />Show retired versions</label><button className="primary" disabled={busy} onClick={() => { if (!canLeave()) return; setCreating(!creating); setEditing(null); }}>New template / version</button></div>
+      <div className="toolbar template-selection"><label>Template version<select aria-label="Template version" value={selected} onChange={(e) => { if (!canLeave()) return; setSelected(e.target.value); setManage(null); setEditing(null); setEditError(""); setSearch(""); setLastSaved(""); }}>{<option value="">Choose a template…</option>}{data.kit_templates.filter(t => showRetired || t.published || !t.ever_published || t.id === selected).sort((a, b) => a.name.localeCompare(b.name) || b.version.localeCompare(a.version)).map((t) => <option key={t.id} value={t.id}>{t.name} · {t.version} · {t.published ? "Published" : t.ever_published ? "Retired" : t.edit_locked ? "Locked draft" : "Draft"}</option>)}</select></label><label className="checkbox-label"><input type="checkbox" checked={showRetired} onChange={e => setShowRetired(e.target.checked)} />Show retired versions</label><button className="primary" disabled={busy} onClick={() => { if (!canLeave()) return; setCreating(!creating); setManage(null); setEditing(null); }}>New template / version</button></div>
       {creating && <DraftForm busy={busy} className="template-form" onDirtyChange={onDirtyChange} onSubmit={(e) => { e.preventDefault(); void create(new FormData(e.currentTarget)); }}>
         <h2>Create a draft</h2><label>Copy lines from<select name="source_template_id" defaultValue={template?.id ?? ""} onChange={(e) => { const source = data.kit_templates.find((t) => t.id === e.target.value); if (source) for (const key of ["name", "framework", "category"] as const) { const field = e.currentTarget.form?.elements.namedItem(key) as HTMLInputElement | HTMLSelectElement | null; if (field) field.value = source[key]; } }}><option value="">Start with an empty list</option>{data.kit_templates.map((t) => <option key={t.id} value={t.id}>{t.name} · {t.version}</option>)}</select></label>
         {field("name", "Template name", template?.name, "text", true)}
@@ -130,21 +155,35 @@ export default function TemplatesPage({ data, demo, busy, dirty, onDirtyChange, 
         <button className="primary" disabled={busy}>Create draft</button><button type="button" className="secondary" onClick={() => { if (canLeave()) setCreating(false); }}>Cancel</button>
       </DraftForm>}
       {template && <>
-        <div className="section-heading template-heading"><div><h2>{template.name} · {template.version}</h2><p>{lines.length} lines · {template.framework} / {template.category} · {template.published ? "Published" : locked ? "Retired / frozen" : "Editable draft"}</p></div><div className="template-actions">{!locked && <><button className="secondary" disabled={busy} onClick={() => openLine("new")}>Add line</button>{sharedPricingReady && <button className="secondary" disabled={busy} onClick={async () => {
+        <div className="section-heading template-heading"><div><h2>{template.name} · {template.version}</h2><p>{lines.length} lines · {template.framework} / {template.category} · {template.published ? "Published" : frozen ? "Retired / frozen" : locked ? "Locked draft" : "Editable draft"}</p></div><div className="template-actions">{!frozen && managementReady && !locked && <button className="secondary" disabled={busy} onClick={() => openManagement("rename")}>Rename draft</button>}{!demo && managementReady && !frozen && <button className="secondary" disabled={busy} onClick={() => openManagement(locked ? "unlock" : "lock")}>{locked ? "Unlock draft" : "Lock draft"}</button>}{!locked && <><button className="secondary" disabled={busy} onClick={() => openLine("new")}>Add line</button>{sharedPricingReady && <button className="secondary" disabled={busy} onClick={async () => {
           if (canLeave() && window.confirm(`Delete draft ${template.name} ${template.version} and all its lines?`) &&
             await command("delete_template", { template_id: template.id })) {
             setSelected(""); setEditing(null);
           }
-        }}>Delete draft</button>}<button className="primary" disabled={busy || !lines.length || remaining.length > 0} onClick={() => { if (canLeave() && window.confirm("Publish this version? It will be frozen and replace the currently published version for this kit family.")) void command("publish_template", { template_id: template.id }); }}>Publish version</button></>}{locked && <button className="primary" disabled={busy} onClick={() => { setEditing(null); setCreating(true); }}>Clone for review</button>}{template.published && <button className="secondary" disabled={busy} onClick={() => { if (window.confirm("Retire this version from new checks? Existing checks are preserved.")) void command("retire_template", { template_id: template.id }).then(ok => { if (ok) { setSelected(""); setEditing(null); } }); }}>Retire version</button>}</div></div>
+        }}>Delete draft</button>}<button className="primary" disabled={busy || !lines.length || remaining.length > 0} onClick={() => { if (canLeave() && window.confirm("Publish this version? It will be frozen and replace the currently published version for this kit family.")) void command("publish_template", { template_id: template.id }); }}>Publish version</button></>}{frozen && <button className="primary" disabled={busy} onClick={() => { setEditing(null); setManage(null); setCreating(true); }}>Clone for review</button>}{template.published && <button className="secondary" disabled={busy} onClick={() => { if (window.confirm("Retire this version from new checks? Existing checks are preserved.")) void command("retire_template", { template_id: template.id }).then(ok => { if (ok) { setSelected(""); setEditing(null); } }); }}>Retire version</button>}</div></div>
+        {manage && <form key={manage} className="template-form" onSubmit={event => {
+          event.preventDefault();
+          void saveManagement(event.currentTarget);
+        }}>
+          <h2>{manage === "rename" ? "Rename draft" : manage === "lock" ? "Lock this draft" : "Unlock this draft"}</h2>
+          {manage === "rename" ? field("name", "Template name", template.name, "text", true) : <>
+            <label>Template passphrase<input name="password" type="password" autoComplete={manage === "lock" ? "new-password" : "off"} required minLength={12} maxLength={72} /></label>
+            {manage === "lock" && <label>Confirm passphrase<input name="confirm_password" type="password" autoComplete="new-password" required minLength={12} maxLength={72} /></label>}
+            <p>{manage === "lock" ? "Use at least 12 characters. Staff can still view the draft, but will need the passphrase to unlock editing." : "Unlocking reopens editing for all staff."}</p>
+          </>}
+          {editError && <div role="alert" className="error">{editError}</div>}
+          <div className="template-actions"><button className="primary" disabled={busy}>{manage === "rename" ? "Save name" : manage === "lock" ? "Lock draft" : "Unlock draft"}</button>
+          <button type="button" className="secondary" disabled={busy} onClick={() => setManage(null)}>Cancel</button></div>
+        </form>}
         <div className="template-review-summary">
           <div>
-            <strong>{locked ? "Version history" : `${lines.length - remaining.length} of ${lines.length} lines reviewed`}</strong>
+            <strong>{frozen ? "Version history" : locked ? "Editing locked" : `${lines.length - remaining.length} of ${lines.length} lines reviewed`}</strong>
             {!locked && <progress aria-label="Template review progress" value={lines.length - remaining.length} max={lines.length || 1} />}
-            <p>{locked ? "Create a draft to edit this version for future checks." : "Edit and save each line as you go. Finish reviewing all lines before publishing."}</p>
+            <p>{frozen ? "Create a draft to edit this version for future checks." : locked ? "Unlock this draft to resume editing." : "Edit and save each line as you go. Finish reviewing all lines before publishing."}</p>
           </div>
           {!locked && <button className="primary" disabled={busy || !remaining.length} onClick={() => openLine(remaining[0])}>Review next line</button>}
         </div>
-        <details className="template-provenance"><summary>Health and source{health.length ? ` ? ${health.length} to review` : ""}</summary>
+        <details className="template-provenance"><summary>Health and source{health.length ? ` - ${health.length} to review` : ""}</summary>
           {health.map(message => <p key={message}>{message}</p>)}
           {typeof lines[0]?.attributes.source_filename === "string" && <p>{lines[0].attributes.source_filename}</p>}
           {typeof lines[0]?.attributes.regulation_basis === "string" && <p>{lines[0].attributes.regulation_basis}</p>}

@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { Workspace, Batch } from "./types";
 import { addMonths, keepExisting, quantities, requiredPacks, validSupplyExpiry } from "./rules";
 import { workflowSchemas, applySlotCommand } from "./check-workflow";
+import { catalogueCodeKey, catalogueItemId, demoCatalogueItemId } from "./catalogue";
 import { calculateFinance } from "./finance";
 import { isTemplateLineReviewed, templateMaximumPacks, templatePriceKey } from "./template-review";
 
@@ -22,6 +23,9 @@ export const schemas = {
   ...workflowSchemas,
   acknowledge_import_review: z.object({ check_id: text, reason: z.string().trim().min(1).max(4000) }),
   edit_check_item: z.object({ item_id: text, substitute_description: z.string().trim().max(500).default(""), pack_description: optional, required_packs: z.coerce.number().finite().min(0).max(1000000), unit_price: z.coerce.number().finite().min(0).max(1000000), reason: z.string().trim().min(1).max(4000),dose_route:z.string().trim().max(4000).optional(),uses:z.string().trim().max(4000).optional(),side_effects:z.string().trim().max(4000).optional() }),
+  rename_template: z.object({ template_id: text, name: text }),
+  lock_template: z.object({ template_id: text, password: z.string().min(12).max(72) }),
+  unlock_template: z.object({ template_id: text, password: z.string().min(12).max(72) }),
   create_template: z.object({ name: text, framework: z.enum(["MSN", "Malta", "ALL"]), category: text, version: text, source_template_id: text.optional() }),
   save_template_item: z.object({ template_id: text, item_id: text.optional(), expected_revision: z.uuid().optional(), source_code: text, description: text, location: optional, pack_description: optional, baseline_packs: z.coerce.number().finite().min(0).max(1000000), scaling: z.enum(["fixed", "band"]), unit_price: z.coerce.number().finite().min(0).max(1000000), attributes: z.record(z.string(), z.unknown()).default({}), share_price: z.boolean().optional() }),
   delete_template: z.object({ template_id: text }),
@@ -32,6 +36,9 @@ export const schemas = {
   create_client: client,
   create_vendor: z.object(contact),
   create_vessel: vessel,
+  assign_catalogue_item_id: z.object({ product_id: text }),
+  save_catalogue_product_code: z.object({ product_id: text, framework: z.enum(["MSN", "Malta"]), code: z.string().trim().min(1).max(250), role: z.enum(["preferred", "alternative"]) }),
+  unlink_catalogue_product_code: z.object({ link_id: text }),
   create_vendor_product: product.extend({ vendor_id: text }),
   update_client: client.extend({ id: text, active_season: z.string().regex(/^(20\d{2})?$/) }),
   update_vendor: z.object({ ...contact, id: text }),
@@ -134,7 +141,13 @@ export function applyDemoCommand(original: Workspace, input: unknown): Workspace
     }
     return data;
   }
-  if (action === "create_template") {
+  if (action === "rename_template") {
+    const template = data.kit_templates.find(t => t.id === p.template_id);
+    if (!template || !isEditableTemplate(data, template.id)) throw new Error("Only editable drafts can be renamed.");
+    template.name = String(p.name);
+  } else if (action === "lock_template" || action === "unlock_template") {
+    throw new Error("Template passphrases are available in the staff workspace.");
+  } else if (action === "create_template") {
     if (data.kit_templates.some((t) => t.framework === p.framework && t.category === p.category && t.version === p.version)) throw new Error("This version already exists.");
     const source = p.source_template_id ? data.kit_templates.find((t) => t.id === p.source_template_id) : undefined;
     if (p.source_template_id && !source) throw new Error("Source template not found.");
@@ -209,7 +222,28 @@ export function applyDemoCommand(original: Workspace, input: unknown): Workspace
     const fields = { ...values, client_id: values.client_id || null };
     if (existing) Object.assign(existing, fields);
     else data.vessels.push({ id, ...fields });
-  } else if (action === "create_vendor_product") data.vendor_products.push({ id, ...payload } as Workspace["vendor_products"][number]);
+  } else if (action === "create_vendor_product") {
+    data.vendor_products.push({ id, ...schemas.create_vendor_product.parse(payload), catalogue_item_id: demoCatalogueItemId(data) });
+  } else if (action === "assign_catalogue_item_id") {
+    const product = data.vendor_products.find(product => product.id === p.product_id);
+    if (!product) throw new Error("Product not found.");
+    if (!catalogueItemId(product)) product.catalogue_item_id = demoCatalogueItemId(data);
+  } else if (action === "save_catalogue_product_code") {
+    const link = schemas.save_catalogue_product_code.parse(payload);
+    if (!data.vendor_products.some(product => product.id === link.product_id)) throw new Error("Product not found.");
+    const code_key = catalogueCodeKey(link.code);
+    const links = data.catalogue_product_codes ??= [];
+    const sameCode = links.filter(row => row.framework === link.framework && row.code_key === code_key);
+    const existing = sameCode.find(row => row.product_id === link.product_id);
+    if (link.role === "preferred" && sameCode.some(row => row.id !== existing?.id && row.role === "preferred")) {
+      throw new Error("This code already has a preferred product. Change that link to Alternative first.");
+    }
+    if (existing) existing.role = link.role;
+    else links.push({ id, code_key, ...link });
+  } else if (action === "unlink_catalogue_product_code") {
+    if (!data.catalogue_product_codes?.some(row => row.id === p.link_id)) throw new Error("Catalogue link not found.");
+    data.catalogue_product_codes = data.catalogue_product_codes.filter(row => row.id !== p.link_id);
+  }
   else if (action === "update_client") {
     const { id, active_season, ...fields } = schemas.update_client.parse(payload);
     const row = data.clients.find(c => c.id === id);
