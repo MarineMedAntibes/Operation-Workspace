@@ -1,4 +1,5 @@
 "use client";
+import DraftForm from "./draft-form";
 import { useState } from "react";
 import CheckSetup, { CheckHeaderEditor, type CheckPanelProps } from "./check-setup";
 import CheckReconciliation from "./check-reconciliation";
@@ -13,7 +14,7 @@ import type { CheckItem } from "@/lib/types";
 type Props=CheckPanelProps&{tab:string;setTab:(tab:string)=>void;edit:(item:CheckItem)=>void;demo:boolean};
 const tabs=["Setup","Reconciliation","Assessment","Cost analysis","Quote","Pick & pack","Directory","Documents","Replaced items","Legacy items","Invoice","Health check"];
 export default function CheckWorkspace(props:Props){
- const {data,check,busy,command,tab,setTab}=props,[reason,setReason]=useState(""),[revision,setRevision]=useState(false);
+ const {data,check,busy,command,tab,setTab}=props,[revision,setRevision]=useState(false);
  const lines=checkItemsInWorkbookOrder(data,check.id),assessed=lines.filter(i=>i.assessment_state!=="unreviewed").length,packed=lines.filter(i=>quantities(i,data.batches).outstanding===0&&i.assessment_state!=="unreviewed").length;
  const active=data.quotes.find(q=>q.check_id===check.id&&!q.superseded_at),workflow=check.attributes?.workflow as Record<string,unknown>|undefined;
  const issues:{message:string;action:string}[]=[];
@@ -33,7 +34,7 @@ export default function CheckWorkspace(props:Props){
  const revisionAllowed=["packing","awaiting_approval"].includes(check.status)&&!data.invoices?.some(i=>i.check_id===check.id);
  if(data.workflow_ready===false)return <section className="panel workflow-panel"><div className="section-heading"><div><h2>Database upgrade required</h2><p>The new workflow is installed locally. Apply the prepared workflow-upgrade.sql file in Supabase before entering assessments or preparing financial documents.</p><p>Existing clients, checks and stock records are retained; their import files do not need to be rerun.</p></div></div></section>;
  return <div className="check-workspace"><div className="workflow-progress"><div><span>Arrival assessed</span><b>{assessed} / {lines.length}</b></div><div><span>Quote</span><b>{active?.status==="approved"?"Approved":active?"Awaiting approval":"Not prepared"}</b></div><div><span>Packing complete</span><b>{packed} / {lines.length}</b></div><button className={`health-button ${issues.length?"health-review":"health-ready"}`} onClick={()=>setTab("Health check")}>{issues.length?`${issues.length} health checks to review`:"Health checks clear"}</button></div>
- {revisionAllowed&&<div className="revision-bar"><span>Need to override quantities, pack size or prices? Reopen assessment and prepare a revised quote; previous approval stays in history.</span><button className="secondary" disabled={busy} onClick={()=>setRevision(!revision)}>Revise quote</button></div>}{revision&&<form className="revision-bar" onSubmit={async e=>{e.preventDefault();if(await command("revise_quote",{check_id:check.id,reason})){setRevision(false);setTab("Assessment");}}}><label>Revision reason<input required value={reason} onChange={e=>setReason(e.target.value)}/></label><button className="primary" disabled={busy}>Reopen assessment</button></form>}
+ {revisionAllowed&&<div className="revision-bar"><span>Need to override quantities, pack size or prices? Reopen assessment and prepare a revised quote; previous approval stays in history.</span><button className="secondary" disabled={busy} onClick={()=>setRevision(!revision)}>Revise quote</button></div>}{revision&&<DraftForm busy={busy} className="revision-bar" onSubmit={async e=>{e.preventDefault();if(await command("revise_quote",{check_id:check.id,reason:String(new FormData(e.currentTarget).get("reason")??"")})){setRevision(false);setTab("Assessment");}}}><label>Revision reason<input name="reason" required/></label><button className="primary" disabled={busy}>Reopen assessment</button></DraftForm>}
  <div className="tabs workflow-tabs" role="tablist" aria-label="Kit check workflow">{tabs.map(name=><button key={name} role="tab" aria-selected={tab===name} onClick={()=>setTab(name)}>{name==="Assessment"?"Arrival check":name==="Pick & pack"?"Pick & fill":name}</button>)}</div>
  {tab==="Setup"&&<><CheckHeaderEditor {...props}/><CheckSetup key={check.id+JSON.stringify(check.attributes?.workflow)} {...props}/></>}
  {tab==="Reconciliation"&&<CheckReconciliation key={check.id} {...props}/>}
