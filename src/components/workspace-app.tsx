@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useEffect, useId, useRef, useState } from "react";
 import { Anchor, ArrowDownToLine, ArrowRight, Box, Check, ChevronRight, ClipboardCheck, Compass, FileText, LayoutDashboard, LogOut, Package, Plus, Search, Ship, ShoppingBag, Users, X, TrendingUp } from "lucide-react";
 import type { Batch, CheckItem, Client, KitCheck, Vendor, VendorProduct, Vessel, Workspace } from "@/lib/types";
@@ -8,12 +9,13 @@ import { applyDemoCommand, type Action } from "@/lib/commands";
 import { signOut } from "@/app/login/actions";
 import { DEMO_STORAGE_KEY } from "@/lib/demo";
 import DraftForm from "./draft-form";
+import IpaidHistory from "./ipaid-history";
 import CataloguePage from "./catalogue-page";
 import TemplatesPage from "./templates-page";
 import CheckWorkspace from "./check-workspace";
 import { checkItemsInWorkbookOrder } from "@/lib/workbook-order";
 
-type Page = "Overview" | "Kit checks" | "Clients" | "Vessels" | "Vendors" | "Catalogue" | "Templates" | "Forecast" | "Finance" | "Import review" | "Staff workspace";
+type Page = "Overview" | "Kit checks" | "Clients" | "Vessels" | "Vendors" | "Catalogue" | "Templates" | "Forecast" | "Finance" | "Import review" | "Staff workspace" | "iPaidThat history";
 type Modal = { title: string; action: Action; fixed?: Record<string, unknown>; fields: Field[] };
 type Field = { name: string; label: string; type?: string; options?: { value: string; label: string }[]; value?: string | number; checked?: boolean; required?: boolean };
 const navigation = [
@@ -22,6 +24,7 @@ const navigation = [
   { label: "Vendors" as Page, icon: ShoppingBag }, { label: "Catalogue" as Page, icon: Package },
   { label: "Templates" as Page, icon: FileText },
   { label: "Finance" as Page, icon: FileText },
+  { label: "iPaidThat history" as Page, icon: FileText },
   { label: "Forecast" as Page, icon: TrendingUp },
   { label: "Import review" as Page, icon: ClipboardCheck },
   { label: "Staff workspace" as Page, icon: Users },
@@ -56,7 +59,9 @@ function ImportReview({ check, busy, onReview }: { check: KitCheck; busy: boolea
 }
 
 export default function WorkspaceApp({ initial, demo }: { initial: Workspace; demo: boolean }) {
+  const router = useRouter();
   const [data, setData] = useState(initial);
+  useEffect(() => { if (!demo) setData(initial); }, [demo, initial]);
   const [page, setPage] = useState<Page>("Overview");
   const [selected, setSelected] = useState<string | null>(null);
   const [tab, setTab] = useState("Assessment");
@@ -226,7 +231,7 @@ export default function WorkspaceApp({ initial, demo }: { initial: Workspace; de
     <div className="main-shell"><header className="topbar"><div><span className="breadcrumb">Workspace</span><ChevronRight size={14} /><span>{page}</span></div><div className="topbar-account"><span className="top-status"><span className="online-dot" />{demo ? "Local preview" : "Staff workspace"}</span>{signOutButton}</div></header>
       {demo && <div className="demo-banner"><Compass size={16} /><span>Fictional preview · 6 example checks across assessment, approval, packing and completion. Changes stay in this browser session.</span><button onClick={() => { sessionStorage.removeItem(DEMO_STORAGE_KEY); location.reload(); }}>Reset preview</button></div>}
       <main className="content">
-        <div className="page-heading"><div><span className="eyebrow">{check ? "KIT CHECK" : "MARINE MEDICAL ANTIBES"}</span><h1>{check ? vesselName(check.vessel_id) : page === "Overview" ? "Your operations, at a glance." : page}</h1><p>{check ? `${clientName(check.client_id)} · ${shortDate(check.check_date)} · ${check.crew} crew` : page === "Overview" ? "A clear view of the vessels and kits in your care." : ({ "Kit checks": "From first assessment to a fully replenished kit.", Clients: "The people and companies behind every vessel.", Vessels: "Every vessel, connected to its client and check history.", Vendors: "Your supplier network, in one place.", Catalogue: "Supplier products, pack sizes and reference prices.", Finance: "Track quotes, invoices and payments across kit checks.", Templates: "Review kit requirements and publish new versions.", "Import review": "Source files needing review, supporting documents and older revisions.", "Staff workspace": "Your account and quick access to daily work.", Forecast: "Plan next year's replacements from recorded kit contents." } as Record<string, string>)[page]}</p></div>{check ? <button className="secondary" onClick={() => { setSelected(null); setSearch(""); }}>← All checks</button> : <button className="primary" onClick={newCheck}><Plus size={17} />New kit check</button>}</div>
+        <div className="page-heading"><div><span className="eyebrow">{check ? "KIT CHECK" : "MARINE MEDICAL ANTIBES"}</span><h1>{check ? vesselName(check.vessel_id) : page === "Overview" ? "Your operations, at a glance." : page}</h1><p>{check ? `${clientName(check.client_id)} · ${shortDate(check.check_date)} · ${check.crew} crew` : page === "Overview" ? "A clear view of the vessels and kits in your care." : ({ "Kit checks": "From first assessment to a fully replenished kit.", Clients: "The people and companies behind every vessel.", Vessels: "Every vessel, connected to its client and check history.", Vendors: "Your supplier network, in one place.", Catalogue: "Supplier products, pack sizes and reference prices.", Finance: "Track quotes, invoices and payments across kit checks.", "iPaidThat history": "Find historical documents and review imported client contacts.", Templates: "Review kit requirements and publish new versions.", "Import review": "Source files needing review, supporting documents and older revisions.", "Staff workspace": "Your account and quick access to daily work.", Forecast: "Plan next year's replacements from recorded kit contents." } as Record<string, string>)[page]}</p></div>{check ? <button className="secondary" onClick={() => { setSelected(null); setSearch(""); }}>← All checks</button> : <button className="primary" onClick={newCheck}><Plus size={17} />New kit check</button>}</div>
         {error && !modal && <div className="error" role="alert">{error}</div>}{notice && <div className="notice" role="status"><Check size={16} />{notice}</div>}
 
         {page === "Staff workspace" && <section className="panel">
@@ -260,6 +265,7 @@ export default function WorkspaceApp({ initial, demo }: { initial: Workspace; de
         {page === "Vessels" && <section className="panel"><Toolbar search={search} setSearch={setSearch} placeholder="Search vessels…" action={<button className="secondary" onClick={() => vesselModal()}><Plus size={16} />Add vessel</button>} /><DataTable headers={["Vessel", "Client", "Framework", "Crew", "Checks", "Actions"]} rows={data.vessels.filter((v) => matches(`${v.name} ${clientName(v.client_id)}`)).map((v) => [v.name, clientName(v.client_id), v.framework, String(v.crew), String(data.kit_checks.filter((c) => c.vessel_id === v.id).length), editButton(v.name, () => vesselModal(v))])} /></section>}
         {page === "Vendors" && <section className="panel"><Toolbar search={search} setSearch={setSearch} placeholder="Search vendors…" action={<button className="secondary" onClick={() => contactModal("vendor")}><Plus size={16} />Add vendor</button>} /><DataTable headers={["Vendor", "Email", "Phone", "Catalogue entries", "Actions"]} rows={data.vendors.filter((v) => matches(v.name)).map((v) => [v.name, v.email || "—", v.phone || "—", String(data.vendor_products.filter((p) => p.vendor_id === v.id).length), editButton(v.name, () => contactModal("vendor", v))])} /></section>}
         {page === "Catalogue" && <CataloguePage data={data} demo={demo} busy={busy} search={search} setSearch={setSearch} editProduct={productModal} command={command} />}
+        {page === "iPaidThat history" && <IpaidHistory clients={data.clients} demo={demo} onDirectoryChanged={() => router.refresh()} />}
         {page === "Finance" && <section className="panel">
           <Toolbar search={search} setSearch={setSearch} placeholder="Search vessel, client or invoice…" action={<label>Payment status <select value={paymentStatus} onChange={event => setPaymentStatus(event.target.value)}>
             <option value="">All</option><option>Awaiting payment</option><option>Paid</option><option>Draft</option><option>Quote</option>

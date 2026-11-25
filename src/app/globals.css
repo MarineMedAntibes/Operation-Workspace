@@ -50,3 +50,9 @@ dialog .draft-controls { padding: 14px 25px 0; }
 .template-review-summary p { color: var(--muted); font-size: 14px; margin: 4px 0 0; }
 .template-panel .template-provenance { padding: 12px 24px 0; }
 .template-save-status { margin: 12px 24px; color: var(--green); font-weight: 600; }
+
+.ipaid-import { margin: 20px 24px; }
+.ipaid-import > p { margin: 12px 0; max-width: 760px; }
+.ipaid-import > label { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.ipaid-import .workflow-actions { padding-inline: 0; }
+.ipaid-import .workflow-actions p { margin-top: 4px; }
