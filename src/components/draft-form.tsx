@@ -10,6 +10,7 @@ type Props = Omit<ComponentPropsWithoutRef<"form">, "onChange"> & {
   busy: boolean;
   locked?: boolean;
   onDraftChange?: (form: HTMLFormElement) => void;
+  onDirtyChange?: (dirty: boolean) => void;
 };
 
 function fields(form: HTMLFormElement): Field[] {
@@ -32,7 +33,7 @@ function same(left: Snapshot, right: Snapshot) {
     Object.entries(left).every(([name, value]) => right[name] === value);
 }
 
-export default function DraftForm({ busy, locked, onDraftChange, children, onKeyDown, ...props }: Props) {
+export default function DraftForm({ busy, locked, onDraftChange, onDirtyChange, children, onKeyDown, ...props }: Props) {
   const formRef = useRef<HTMLFormElement>(null);
   const [history, setHistory] = useState<History>();
 
@@ -57,7 +58,9 @@ export default function DraftForm({ busy, locked, onDraftChange, children, onKey
     onDraftChange?.(form);
   }
 
-  const dirty = history && !same(history.saved, history.steps[history.cursor]);
+  const dirty = !!history && !same(history.saved, history.steps[history.cursor]);
+  useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
   return <form {...props} ref={formRef} onChange={event => {
     const form = event.currentTarget;
     const snapshot = capture(form);

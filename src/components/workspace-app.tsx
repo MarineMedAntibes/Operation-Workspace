@@ -63,6 +63,7 @@ export default function WorkspaceApp({ initial, demo }: { initial: Workspace; de
   const [modal, setModal] = useState<Modal | null>(null);
   const [directory, setDirectory] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [templateDirty, setTemplateDirty] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [forecastMonth, setForecastMonth] = useState("");
@@ -110,7 +111,14 @@ export default function WorkspaceApp({ initial, demo }: { initial: Workspace; de
     finally { setBusy(false); }
   }
 
-  function navigate(next: Page) { setPage(next); setSelected(null); setSearch(""); setError(""); setNotice(""); }
+  useEffect(() => {
+    if (!templateDirty) return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [templateDirty]);
+
+  function navigate(next: Page) { if (page === "Templates" && next !== page && templateDirty && !window.confirm("Discard unsaved template changes?")) return; setPage(next); setSelected(null); setSearch(""); setError(""); setNotice(""); }
   function openCheck(c: KitCheck) { setSelected(c.id); setPage("Kit checks"); setSearch(""); setTab(c.status === "packing" ? "Pick & pack" : c.status === "awaiting_approval" ? "Quote" : "Assessment"); }
   function newCheck() {
     setDraftVessel("");
@@ -210,7 +218,7 @@ export default function WorkspaceApp({ initial, demo }: { initial: Workspace; de
   }
 
   const staffName = data.staff_profile?.name ?? "Staff workspace";
-  const signOutButton = !demo && <form action={signOut}><button className="secondary"><LogOut size={16} />Sign out</button></form>;
+  const signOutButton = !demo && <form action={signOut} onSubmit={event => { if (templateDirty && !window.confirm("Discard unsaved template changes and sign out?")) event.preventDefault(); }}><button className="secondary"><LogOut size={16} />Sign out</button></form>;
 
   return <div className="app-shell">
     <aside className="sidebar"><a href="/" className="brand"><span className="brand-mark"><Anchor size={25} /></span><span>MARINE MEDICAL<small>OPERATIONS WORKSPACE</small></span></a><div className="workspace-label">WORKSPACE</div><nav aria-label="Main navigation">{navigation.map(({ label, icon: Icon }) => <button key={label} onClick={() => navigate(label)} className={page === label ? "active" : ""}><Icon size={19} />{label}{label === "Kit checks" && <span className="nav-count">{activeChecks.length}</span>}</button>)}</nav><div className="sidebar-bottom"><div className="port"><span className="online-dot" />Antibes, France<small>Care on board. Confidence ashore.</small></div><div className="staff"><span className="avatar">MM</span><div>{staffName}<small>Shared team access</small></div></div></div></aside>
@@ -246,7 +254,7 @@ export default function WorkspaceApp({ initial, demo }: { initial: Workspace; de
         </>}
 
         {page === "Import review" && <section className="panel"><Toolbar search={search} setSearch={setSearch} placeholder="Search source file, vessel or issue..." /><div className="info">Source manifests preserve which files were imported or deferred. A manifest is not a completed assessment. Files with missing dates, conflicting versions or unsupported layouts stay here for review.</div><div className="table-wrap"><table><thead><tr><th>Vessel / source</th><th>Import status</th><th>Issues / notes</th></tr></thead><tbody>{(data.import_sources ?? []).filter((source) => matches(`${source.vessel_name} ${source.source_path} ${JSON.stringify(source.attributes)}`)).map((source) => <tr key={source.id}><td><strong>{source.vessel_name}</strong><small>{source.source_path}</small></td><td><span className="badge">{source.status.replaceAll("_", " ")}</span></td><td>{String(source.attributes.summary ?? source.attributes.reason ?? "")}<details><summary>Source metadata</summary><dl>{Object.entries(source.attributes).map(([key, value]) => <div key={key}><dt>{key.replaceAll("_", " ")}</dt><dd>{typeof value === "string" ? value : JSON.stringify(value)}</dd></div>)}</dl></details></td></tr>)}</tbody></table></div></section>}
-        {page === "Templates" && <TemplatesPage data={data} demo={demo} busy={busy} command={command} />}
+        {page === "Templates" && <TemplatesPage data={data} demo={demo} busy={busy} command={command} dirty={templateDirty} onDirtyChange={setTemplateDirty} serverError={error} />}
         {page === "Clients" && <section className="panel"><Toolbar search={search} setSearch={setSearch} placeholder="Search clients…" action={<><label>Season <select value={clientSeason} onChange={e => setClientSeason(e.target.value)}><option value="">All clients</option>{[...new Set([String(season), String(season + 1), ...data.clients.flatMap(c => c.attributes?.active_season ? [String(c.attributes.active_season)] : [])])].sort().map(year => <option key={year} value={year}>Active in {year}</option>)}</select></label><button className="secondary" onClick={() => contactModal("client")}><Plus size={16} />Add client</button></>} /><DataTable headers={["Client", "Email", "Phone", "Vessels", "Review", "Active season", "Actions"]} rows={data.clients.filter((c) => matches(`${c.name} ${c.email ?? ""}`) && (!clientSeason || String(c.attributes?.active_season ?? "") === clientSeason)).map((c) => [c.name, c.email || "—", c.phone || "—", String(data.vessels.filter((v) => v.client_id === c.id).length), c.attributes?.provisional ? "Contact details needed" : "", String(c.attributes?.active_season ?? "—"), editButton(c.name, () => contactModal("client", c))]) } /></section>}
         {page === "Vessels" && <section className="panel"><Toolbar search={search} setSearch={setSearch} placeholder="Search vessels…" action={<button className="secondary" onClick={() => vesselModal()}><Plus size={16} />Add vessel</button>} /><DataTable headers={["Vessel", "Client", "Framework", "Crew", "Checks", "Actions"]} rows={data.vessels.filter((v) => matches(`${v.name} ${clientName(v.client_id)}`)).map((v) => [v.name, clientName(v.client_id), v.framework, String(v.crew), String(data.kit_checks.filter((c) => c.vessel_id === v.id).length), editButton(v.name, () => vesselModal(v))])} /></section>}
         {page === "Vendors" && <section className="panel"><Toolbar search={search} setSearch={setSearch} placeholder="Search vendors…" action={<button className="secondary" onClick={() => contactModal("vendor")}><Plus size={16} />Add vendor</button>} /><DataTable headers={["Vendor", "Email", "Phone", "Catalogue entries", "Actions"]} rows={data.vendors.filter((v) => matches(v.name)).map((v) => [v.name, v.email || "—", v.phone || "—", String(data.vendor_products.filter((p) => p.vendor_id === v.id).length), editButton(v.name, () => contactModal("vendor", v))])} /></section>}

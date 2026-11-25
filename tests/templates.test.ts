@@ -12,7 +12,7 @@ test("versioned template RPC protects history, price review, staff access and re
    create table auth.users(id uuid primary key);
    create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;
    grant usage on schema auth to authenticated; grant execute on function auth.uid() to authenticated;`);
-  for (const file of ["202610270001_workspace.sql", "202611200001_templates.sql", "202611200002_check_edits.sql", "202611200003_workflow.sql", "202611240001_template_review.sql", "202611240002_template_shared_prices.sql", "202611240003_template_quantity_caps.sql"]) await db.exec(await readFile(new URL(`../supabase/migrations/${file}`, import.meta.url), "utf8"));
+  for (const file of ["202610270001_workspace.sql", "202611200001_templates.sql", "202611200002_check_edits.sql", "202611200003_workflow.sql", "202611240001_template_review.sql", "202611240002_template_shared_prices.sql", "202611240003_template_quantity_caps.sql", "202611250001_template_edit_revisions.sql"]) await db.exec(await readFile(new URL(`../supabase/migrations/${file}`, import.meta.url), "utf8"));
   const staff="00000000-0000-0000-0000-000000000001";
   await db.exec(`insert into auth.users values ('${staff}'); insert into public.staff_members values ('${staff}','Tester'); set role authenticated;`);
   const command=async(action:string,payload:object)=>(await db.query<{id:string}>("select public.workspace_command($1,$2::jsonb) as id",[action,JSON.stringify(payload)])).rows[0].id;
@@ -30,6 +30,11 @@ test("versioned template RPC protects history, price review, staff access and re
   await assert.rejects(()=>command("publish_template",{template_id:template}),/prices and quantities/);
   await command("save_template_item",{...base,item_id:item,attributes:{ned:true,price_quantity_reviewed:true}});
   await assert.rejects(()=>command("save_template_item",{...base,source_code:"Other",scaling:"guess"}),/Invalid scaling/);
+  const revision = (await db.query<{edit_revision:string}>("select edit_revision from public.template_items where id=$1",[item])).rows[0].edit_revision;
+  const reviewedLine = {...base,item_id:item,attributes:{ned:true,price_quantity_reviewed:true},expected_revision:revision};
+  await command("save_template_item",reviewedLine);
+  await assert.rejects(()=>command("save_template_item",{...reviewedLine,unit_price:999}),/changed after you opened it/);
+  await assert.rejects(()=>command("delete_template_item",{template_id:template,item_id:item,expected_revision:revision}),/changed after you opened it/);
   await command("publish_template",{template_id:template});
   await assert.rejects(()=>command("save_template_item",{...base,item_id:item}),/immutable/);
   await assert.rejects(()=>db.query("select public.workspace_command_v1('create_client','{}'::jsonb)"),/permission denied/);

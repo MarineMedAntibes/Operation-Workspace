@@ -23,9 +23,9 @@ export const schemas = {
   acknowledge_import_review: z.object({ check_id: text, reason: z.string().trim().min(1).max(4000) }),
   edit_check_item: z.object({ item_id: text, substitute_description: z.string().trim().max(500).default(""), pack_description: optional, required_packs: z.coerce.number().finite().min(0).max(1000000), unit_price: z.coerce.number().finite().min(0).max(1000000), reason: z.string().trim().min(1).max(4000),dose_route:z.string().trim().max(4000).optional(),uses:z.string().trim().max(4000).optional(),side_effects:z.string().trim().max(4000).optional() }),
   create_template: z.object({ name: text, framework: z.enum(["MSN", "Malta", "ALL"]), category: text, version: text, source_template_id: text.optional() }),
-  save_template_item: z.object({ template_id: text, item_id: text.optional(), source_code: text, description: text, location: optional, pack_description: optional, baseline_packs: z.coerce.number().finite().min(0).max(1000000), scaling: z.enum(["fixed", "band"]), unit_price: z.coerce.number().finite().min(0).max(1000000), attributes: z.record(z.string(), z.unknown()).default({}), share_price: z.boolean().optional() }),
+  save_template_item: z.object({ template_id: text, item_id: text.optional(), expected_revision: z.uuid().optional(), source_code: text, description: text, location: optional, pack_description: optional, baseline_packs: z.coerce.number().finite().min(0).max(1000000), scaling: z.enum(["fixed", "band"]), unit_price: z.coerce.number().finite().min(0).max(1000000), attributes: z.record(z.string(), z.unknown()).default({}), share_price: z.boolean().optional() }),
   delete_template: z.object({ template_id: text }),
-  delete_template_item: z.object({ template_id: text, item_id: text }),
+  delete_template_item: z.object({ template_id: text, item_id: text, expected_revision: z.uuid().optional() }),
   publish_template: z.object({ template_id: text }),
   retire_template: z.object({ template_id: text }),
   set_kill_line: z.object({ item_id: text, kill_line: z.boolean() }),
@@ -170,7 +170,7 @@ export function applyDemoCommand(original: Workspace, input: unknown): Workspace
       if (action === "delete_template_item") data.template_items.splice(index, 1);
       else {
         if (data.template_items.some((i) => i.template_id === template.id && i.source_code === p.source_code && i.id !== p.item_id)) throw new Error("Line key already exists.");
-        const { share_price, item_id, ...values } = schemas.save_template_item.parse(payload);
+        const { share_price, item_id, expected_revision: _, ...values } = schemas.save_template_item.parse(payload);
         const line = { ...values, id: item_id || id };
         const maximum = templateMaximumPacks(line.attributes);
         if (line.attributes.maximum_packs !== undefined && (maximum === undefined || maximum > 1000000 ||
