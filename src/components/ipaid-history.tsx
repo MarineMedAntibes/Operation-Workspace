@@ -121,12 +121,11 @@ export default function IpaidHistory({ clients, demo, onDirectoryChanged }: {
   if (demo) return <div className="info">Workbook import is available in the signed-in staff workspace.</div>;
 
   return <section className="panel">
-    <details className="ipaid-import">
-      <summary>Import iPaidThat workbook</summary>
+    <section className="ipaid-import" aria-labelledby="ipaid-import-heading">
+      <h2 id="ipaid-import-heading">Import iPaidThat workbook</h2>
       <p>Choose an XLSX with Clients and Documents sheets. The import links clear matches, adds new contacts with an unambiguous primary email, and queues other contacts for review.</p>
-      <label>Master workbook <input type="file" accept=".xlsx" disabled={busy} onChange={event => {
+      <label>Choose an Excel workbook <input type="file" accept=".xlsx" disabled={busy} onChange={event => {
         const file = event.target.files?.[0];
-        event.target.value = "";
         if (file) void read(file);
       }} /></label>
       {preview && <div className="workflow-actions">
@@ -134,7 +133,7 @@ export default function IpaidHistory({ clients, demo, onDirectoryChanged }: {
         <button className="primary" disabled={busy || !!readError} onClick={() => void importWorkbook()}>{progress ? "Retry import" : "Import workbook"}</button>
       </div>}
       {progress && <p role="status">{progress.done.toLocaleString()} of {progress.total.toLocaleString()} rows received. {busy ? "Saving archive…" : "Ready to retry."}</p>}
-    </details>
+    </section>
     {error && <p className="error" role="alert">{error}</p>}
     {readError && <p className="error" role="alert">{readError}</p>}
     {notice && <p className="notice" role="status">{notice}</p>}
